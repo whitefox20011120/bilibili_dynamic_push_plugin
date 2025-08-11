@@ -164,20 +164,19 @@ def _extract_text_from_major(major: Any, at_resolver: Optional[Callable[[str], O
     parts: List[str] = []
 
     def pick_from_article(block: dict):
-        title = block.get("title") or ""
-        summary = block.get("summary") or ""
+        title = block.get("title") or block.get("title_text") or ""  # 优化：添加更多可能的标题键
+        summary = block.get("summary") or block.get("desc") or block.get("description") or ""  # 优化：添加更多描述键
         if title:
             parts.append(str(title))
         if summary and summary != title:
             parts.append(str(summary))
 
     def pick_from_archive(block: dict):
-        title = block.get("title") or ""
-        desc = block.get("desc") or ""
+        # 视频动态：优先标题（优化：仅标题，不追加简介）
+        title = block.get("title") or block.get("title_text") or block.get("name") or ""
         if title:
             parts.append(str(title))
-        if desc and desc != title:
-            parts.append(str(desc))
+        # 不追加 desc，以符合用户需求：仅发送标题
 
     def pick_from_opus(block: dict):
         title = block.get("title") or ""
@@ -193,7 +192,7 @@ def _extract_text_from_major(major: Any, at_resolver: Optional[Callable[[str], O
         o_nodes = _ensure_list(block.get("rich_text_nodes"))
         if o_nodes:
             parts.append(_stringify_rich_nodes(o_nodes, at_resolver=at_resolver))
-        for k in ("content", "desc", "text"):
+        for k in ("content", "desc", "text", "description", "intro", "summary"):  # 优化：添加更多键
             v = _sanitize_text(block.get(k) or "") if isinstance(block.get(k), str) else ""
             if v:
                 parts.append(v)
@@ -209,32 +208,44 @@ def _extract_text_from_major(major: Any, at_resolver: Optional[Callable[[str], O
     if not isinstance(major, dict):
         return ""
 
-    if "opus" in major:
+    # 支持 dyn_xxx 结构（优化：兼容 polymer 直接 dyn_archive 等）
+    if "dyn_opus" in major:
+        pick_from_opus(_ensure_dict(major.get("dyn_opus")))
+    elif "opus" in major:
         pick_from_opus(_ensure_dict(major.get("opus")))
-    if "article" in major:
+
+    if "dyn_article" in major:
+        pick_from_article(_ensure_dict(major.get("dyn_article")))
+    elif "article" in major:
         pick_from_article(_ensure_dict(major.get("article")))
-    if "archive" in major:
+
+    if "dyn_archive" in major:
+        pick_from_archive(_ensure_dict(major.get("dyn_archive")))
+    elif "archive" in major:
         pick_from_archive(_ensure_dict(major.get("archive")))
-    if "live" in major:
-        live = _ensure_dict(major.get("live"))
+
+    if "live" in major or "dyn_live" in major:
+        live = _ensure_dict(major.get("live") or major.get("dyn_live"))
         title = live.get("title") or ""
         room = live.get("room_id") or live.get("roomid") or ""
         if title:
             parts.append(str(title))
         if room:
             parts.append(f"直播间：{room}")
-    if "pgc" in major:
-        pgc = _ensure_dict(major.get("pgc"))
+
+    if "pgc" in major or "dyn_pgc" in major:
+        pgc = _ensure_dict(major.get("pgc") or major.get("dyn_pgc"))
         season = _ensure_dict(pgc.get("season"))
         ep = _ensure_dict(pgc.get("ep"))
         title = ep.get("title") or season.get("title") or ""
-        subtitle = ep.get("long_title") or ep.get("pub_time") or ""
+        subtitle = ep.get("long_title") or ep.get("pub_time") or ep.get("desc") or ep.get("description") or ""  # 优化：添加描述
         if title:
             parts.append(str(title))
         if subtitle and subtitle != title:
             parts.append(str(subtitle))
-    if "ugc_season" in major:
-        ugc = _ensure_dict(major.get("ugc_season"))
+
+    if "ugc_season" in major or "dyn_ugc_season" in major:
+        ugc = _ensure_dict(major.get("ugc_season") or major.get("dyn_ugc_season"))
         title = ugc.get("title") or ""
         if title:
             parts.append(str(title))
@@ -310,6 +321,12 @@ def _pick_author_name(modules: dict, uid: str, resolver=None) -> str:
 
 # ---------------- 图片提取（兼容 dyn_draw/major 等多形态） ----------------
 def _collect_images_from_major(major: Any) -> List[str]:
+    """
+    统一收集图集/文章封面/视频封面等。
+    对“视频动态”（major.archive/pgc/ugc_season）：
+      - 优先取 cover/cover_url/pic/first_frame/dynamic_cover
+      - 兼容 covers 数组
+    """
     urls: List[str] = []
     if isinstance(major, list):
         for m in major:
@@ -318,12 +335,30 @@ def _collect_images_from_major(major: Any) -> List[str]:
     if not isinstance(major, dict):
         return urls
 
-    if "draw" in major:
+    # 图文（优化：支持 dyn_draw）
+    if "dyn_draw" in major:
+        for it in (_ensure_dict(major.get("dyn_draw")).get("items") or []):
+            src = _ensure_dict(it).get("src")
+            if src:
+                urls.append(src)
+    elif "draw" in major:
         for it in (_ensure_dict(major.get("draw")).get("items") or []):
             src = _ensure_dict(it).get("src")
             if src:
                 urls.append(src)
-    if "opus" in major:
+
+    # OPUS（也可能带图，支持 dyn_opus）
+    if "dyn_opus" in major:
+        opus = _ensure_dict(major.get("dyn_opus"))
+        for key in ("pics", "pictures", "images"):
+            for pic in _ensure_list(opus.get(key)):
+                src = _ensure_dict(pic).get("url") or _ensure_dict(pic).get("src")
+                if src:
+                    urls.append(src)
+        cov = opus.get("cover")
+        if isinstance(cov, str) and cov:
+            urls.append(cov)
+    elif "opus" in major:
         opus = _ensure_dict(major.get("opus"))
         for key in ("pics", "pictures", "images"):
             for pic in _ensure_list(opus.get(key)):
@@ -333,30 +368,71 @@ def _collect_images_from_major(major: Any) -> List[str]:
         cov = opus.get("cover")
         if isinstance(cov, str) and cov:
             urls.append(cov)
-    if "article" in major:
+
+    # 文章（支持 dyn_article）
+    if "dyn_article" in major:
+        covs = _ensure_list(_ensure_dict(major.get("dyn_article")).get("covers"))
+        for c in covs:
+            if c:
+                urls.append(str(c))
+    elif "article" in major:
         covs = _ensure_list(_ensure_dict(major.get("article")).get("covers"))
         for c in covs:
             if c:
                 urls.append(str(c))
-    for k in ("archive", "pgc", "live", "ugc_season"):
+
+    # 视频（UGC，支持 dyn_archive）
+    if "dyn_archive" in major:
+        arc = _ensure_dict(major.get("dyn_archive"))
+        for key in ("cover", "cover_url", "pic", "dynamic_cover", "first_frame"):
+            val = arc.get(key)
+            if isinstance(val, str) and val.strip():
+                urls.append(val.strip())
+        for c in _ensure_list(arc.get("covers")):
+            if c:
+                urls.append(str(c))
+        # 某些场景封面在 arc["bvid_cover"] 或 arc["pic_url"]
+        for key in ("bvid_cover", "pic_url"):
+            val = arc.get(key)
+            if isinstance(val, str) and val.strip():
+                urls.append(val.strip())
+    elif "archive" in major:
+        arc = _ensure_dict(major.get("archive"))
+        for key in ("cover", "cover_url", "pic", "dynamic_cover", "first_frame"):
+            val = arc.get(key)
+            if isinstance(val, str) and val.strip():
+                urls.append(val.strip())
+        for c in _ensure_list(arc.get("covers")):
+            if c:
+                urls.append(str(c))
+        # 某些场景封面在 arc["bvid_cover"] 或 arc["pic_url"]
+        for key in ("bvid_cover", "pic_url"):
+            val = arc.get(key)
+            if isinstance(val, str) and val.strip():
+                urls.append(val.strip())
+
+    # 番剧/合集等也可能带封面（支持 dyn_pgc 等）
+    for k in ("pgc", "dyn_pgc", "live", "dyn_live", "ugc_season", "dyn_ugc_season"):
         if k in major:
             cover = _ensure_dict(major.get(k)).get("cover")
             if cover:
                 urls.append(str(cover))
+
     return _unique(urls)
 
 
 def _collect_images_from_module_dynamic(md_block: dict) -> List[str]:
     urls: List[str] = []
     md_block = _ensure_dict(md_block)
+    # 支持 dyn_draw 直接在 md_block
     dyn_draw = _ensure_dict(md_block.get("dyn_draw"))
     for it in _ensure_list(dyn_draw.get("items")):
         src = _ensure_dict(it).get("src")
         if src:
             urls.append(src)
-    major = md_block.get("major")
-    if major:
-        urls.extend(_collect_images_from_major(major))
+    # major 或直接 md_block（优化：兼容无 major 的结构，如 dyn_archive 直接）
+    major = md_block.get("major") or md_block
+    urls.extend(_collect_images_from_major(major))
     return _unique(urls)
 
 
@@ -369,9 +445,9 @@ class BilibiliDynamicPushPlugin(BasePlugin):
         "新/旧接口+HTML兜底；冷启动仅记不发；去重；"
         "静默模式（仅错误输出）；文案增强（富文本&转发解析）；昵称查补缓存；"
         "debug.output_dir 指定调试落盘；兼容 modules 列表结构与 dyn_forward；"
-        "发图链路（Napcat 友好）：Base64 → URL → file:/// 兜底。"
+        "发图链路（Napcat 友好）：Base64 → URL → file:/// 兜底；视频动态自动携带封面图。"
     )
-    plugin_version = "3.4.0"
+    plugin_version = "1.1.0"
     plugin_author = "白狐"
     enable_plugin = True
 
@@ -380,8 +456,7 @@ class BilibiliDynamicPushPlugin(BasePlugin):
     config_schema = {}
 
     dependencies: List[str] = []
-    # 建议装 Pillow 用于转 JPG 压缩（无 Pillow 也能跑，只是少一步优化）
-    python_dependencies: List[str] = ["pillow"]
+    python_dependencies: List[str] = ["pillow"]  # 推荐安装，用于压缩/转 JPG
 
     # ---------------- 日志封装（silent 下屏蔽普通日志，错误始终输出） ----------------
     def _log(self, msg: str, *, flush: bool = True):
@@ -811,6 +886,8 @@ class BilibiliDynamicPushPlugin(BasePlugin):
                         or card.get("title")
                         or ""
                     )
+
+                    # 图文
                     imgs = []
                     pics = _ensure_list(_ensure_dict(card.get("item")).get("pictures"))
                     if pics:
@@ -820,6 +897,15 @@ class BilibiliDynamicPushPlugin(BasePlugin):
                             if src:
                                 imgs.append({"src": src})
 
+                    # 视频封面（旧接口常见字段：pic/cover）
+                    video_cover = None
+                    for key in ("pic", "cover", "dynamic_cover", "first_frame"):
+                        v = card.get(key)
+                        if isinstance(v, str) and v.strip():
+                            video_cover = v.strip()
+                            break
+
+                    # 转发
                     forward_major = {}
                     if card.get("origin"):
                         try:
@@ -840,31 +926,64 @@ class BilibiliDynamicPushPlugin(BasePlugin):
                                 src = p.get("img_src") or p.get("img_url")
                                 if src:
                                     oimgs.append({"src": src})
+
+                        # 原动态视频封面兜底
+                        ocover = None
+                        for key in ("pic", "cover", "dynamic_cover", "first_frame"):
+                            v = origin.get(key)
+                            if isinstance(v, str) and v.strip():
+                                ocover = v.strip()
+                                break
+
                         ouname = (
                             _ensure_dict(origin.get("user")).get("name")
                             or _ensure_dict(card.get("origin_user")).get("info", {}).get("uname")
                             or "原动态"
                         )
-                        forward_major = {
-                            "forward": {
-                                "orig": {
-                                    "modules": {
-                                        "module_author": {"name": ouname},
-                                        "module_dynamic": {
-                                            "desc": {"text": otext},
-                                            "major": {"draw": {"items": oimgs}} if oimgs else {},
-                                        },
+                        if oimgs:
+                            forward_major = {
+                                "forward": {
+                                    "orig": {
+                                        "modules": {
+                                            "module_author": {"name": ouname},
+                                            "module_dynamic": {
+                                                "desc": {"text": otext},
+                                                "major": {"draw": {"items": oimgs}},
+                                            },
+                                        }
                                     }
                                 }
                             }
-                        }
+                        elif ocover:
+                            forward_major = {
+                                "forward": {
+                                    "orig": {
+                                        "modules": {
+                                            "module_author": {"name": ouname},
+                                            "module_dynamic": {
+                                                "desc": {"text": otext},
+                                                "major": {"archive": {"cover": ocover}},
+                                            },
+                                        }
+                                    }
+                                }
+                            }
+
+                    # 组装
+                    md_block: dict
+                    if imgs:
+                        md_block = {"major": {"draw": {"items": imgs}}}
+                    elif video_cover:
+                        md_block = {"major": {"archive": {"cover": video_cover}}}
+                    else:
+                        md_block = {}
 
                     built = {
                         "id_str": dynamic_id_str,
                         "modules": {
                             "module_author": {"name": uname},
                             "module_desc": {"text": text_content},
-                            "module_dynamic": (forward_major if forward_major else ({"major": {"draw": {"items": imgs}}} if imgs else {})),
+                            "module_dynamic": (forward_major if forward_major else md_block),
                         },
                     }
                     if dynamic_id_str:
@@ -927,33 +1046,60 @@ class BilibiliDynamicPushPlugin(BasePlugin):
         modules = _ensure_dict(_ensure_dict(cand).get("modules"))
         uname = _ensure_dict(modules.get("module_author")).get("name") \
                 or _ensure_dict(cand.get("user")).get("name") or f"UID:{uid}"
-        text_content = _ensure_dict(_ensure_dict(modules.get("module_desc")).get("text") or {}) \
-                       or _ensure_dict(_ensure_dict(modules.get("module_dynamic")).get("desc")).get("text") \
-                       or _ensure_dict(cand.get("item")).get("description") or cand.get("title") or ""
+
+        # 优化：使用统一的提取函数，确保视频标题被正确提取（即使在 HTML 结构中）
+        text_content = _extract_text_from_desc(modules.get("module_desc"))
+        if not text_content:
+            md = _ensure_dict(modules.get("module_dynamic"))
+            text_content = _extract_text_from_desc(md.get("desc"))
+        if not text_content:
+            # 兼容无 major 的结构
+            md_major = md.get("major") or md
+            text_content = _extract_text_from_major(md_major)
+        # 额外兜底旧结构
+        if not text_content:
+            text_content = _ensure_dict(cand.get("item")).get("description") or cand.get("title") or ""
 
         imgs = []
         md = _ensure_dict(modules.get("module_dynamic"))
-        major = _ensure_dict(md.get("major"))
-        if "draw" in major:
-            for it in _ensure_list(_ensure_dict(major.get("draw")).get("items")):
+        # 兼容无 major
+        md_major = md.get("major") or md
+        # 图文
+        if "draw" in md_major or "dyn_draw" in md_major:
+            draw = _ensure_dict(md_major.get("draw") or md_major.get("dyn_draw"))
+            for it in _ensure_list(draw.get("items")):
                 it = _ensure_dict(it)
                 if it.get("src"):
                     imgs.append({"src": it["src"]})
-        elif _ensure_list(_ensure_dict(cand.get("item")).get("pictures")):
-            for p in _ensure_list(_ensure_dict(cand.get("item")).get("pictures")):
-                p = _ensure_dict(p)
-                src = p.get("img_src") or p.get("img_url")
-                if src:
-                    imgs.append({"src": src})
+        # 视频封面（HTML 中常见：card.pic / major.archive.cover）
+        video_cover = None
+        arc = _ensure_dict(md_major.get("archive") or md_major.get("dyn_archive"))
+        for key in ("cover", "cover_url", "pic", "dynamic_cover", "first_frame"):
+            v = arc.get(key)
+            if isinstance(v, str) and v.strip():
+                video_cover = v.strip()
+                break
+        if not video_cover:
+            v = _ensure_dict(cand.get("card")).get("pic")
+            if isinstance(v, str) and v.strip():
+                video_cover = v.strip()
 
         if not dynamic_id:
             return None
+
+        if imgs:
+            md_block = {"major": {"draw": {"items": imgs}}}
+        elif video_cover:
+            md_block = {"major": {"archive": {"cover": video_cover}}}
+        else:
+            md_block = {}
+
         return {
             "id_str": dynamic_id,
             "modules": {
                 "module_author": {"name": uname},
                 "module_desc": {"text": text_content},
-                "module_dynamic": {"major": {"draw": {"items": imgs}}} if imgs else {},
+                "module_dynamic": md_block,
             },
         }
 
@@ -970,7 +1116,9 @@ class BilibiliDynamicPushPlugin(BasePlugin):
         text_content = _extract_text_from_desc(module_desc, at_resolver=self._resolve_uname)
 
         if not text_content:
-            text_content = _extract_text_from_major(module_dynamic.get("major"), at_resolver=self._resolve_uname)
+            # 兼容无 major 的结构（如 dyn_archive 直接在 module_dynamic）
+            md_major = module_dynamic.get("major") or module_dynamic
+            text_content = _extract_text_from_major(md_major, at_resolver=self._resolve_uname)
 
         # 转发识别：优先 polymer 的 dyn_forward，其次老的 orig
         forward_author, forward_text, forward_imgs = "", "", []
@@ -985,8 +1133,9 @@ class BilibiliDynamicPushPlugin(BasePlugin):
                 forward_author = _pick_author_name(fmods, uid, resolver=self._resolve_uname)
                 forward_text = _extract_text_from_desc(_ensure_dict(fmods.get("module_desc")), at_resolver=self._resolve_uname)
                 if not forward_text:
-                    forward_text = _extract_text_from_major(_ensure_dict(fmods.get("module_dynamic")).get("major"),
-                                                            at_resolver=self._resolve_uname)
+                    f_md = _ensure_dict(fmods.get("module_dynamic"))
+                    f_md_major = f_md.get("major") or f_md
+                    forward_text = _extract_text_from_major(f_md_major, at_resolver=self._resolve_uname)
                 forward_imgs = _collect_images_from_module_dynamic(_ensure_dict(fmods.get("module_dynamic")))
 
         if not is_forward:
@@ -998,17 +1147,21 @@ class BilibiliDynamicPushPlugin(BasePlugin):
                 o_md = _ensure_dict(o_modules.get("module_dynamic"))
                 forward_text = _extract_text_from_desc(_ensure_dict(o_md.get("desc")), at_resolver=self._resolve_uname)
                 if not forward_text:
-                    forward_text = _extract_text_from_major(o_md.get("major"), at_resolver=self._resolve_uname)
+                    o_md_major = o_md.get("major") or o_md
+                    forward_text = _extract_text_from_major(o_md_major, at_resolver=self._resolve_uname)
                 forward_imgs = _collect_images_from_module_dynamic(o_md)
 
+        # 当前动态的图片/封面（非转发）
         cur_imgs = [] if is_forward else _collect_images_from_module_dynamic(module_dynamic)
 
+        # 如果没有任何文本，给一个合理的占位（图集/视频）
         if not text_content:
+            md_major = module_dynamic.get("major") or module_dynamic
             if is_forward and forward_text:
                 text_content = ""
-            elif is_forward and not forward_text:
-                text_content = "【转发】"
-            elif not is_forward and cur_imgs:
+            elif ("archive" in md_major) or ("dyn_archive" in md_major) or ("pgc" in md_major) or ("dyn_pgc" in md_major) or ("ugc_season" in md_major) or ("dyn_ugc_season" in md_major):
+                text_content = "【视频】"
+            elif cur_imgs:
                 text_content = f"【图集】共 {len(cur_imgs)} 张"
             else:
                 text_content = "（无文字内容）"
