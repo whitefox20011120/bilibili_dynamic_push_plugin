@@ -1,7 +1,7 @@
 {
   "manifest_version": 1,
   "name": "bilibili_dynamic_push_plugin",
-  "version": "1.1.0",
+  "version": "1.2.1",
   "description": "定时检测B站UP主动态并推送到指定QQ群（跳过置顶、支持多UID/多群、启动日志提示）。",
   "author": {
     "name": "白狐",
