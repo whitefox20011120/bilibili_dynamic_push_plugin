@@ -414,9 +414,11 @@ def _collect_images_from_major(major: Any) -> List[str]:
     # 番剧/合集等也可能带封面（支持 dyn_pgc 等）
     for k in ("pgc", "dyn_pgc", "live", "dyn_live", "ugc_season", "dyn_ugc_season"):
         if k in major:
-            cover = _ensure_dict(major.get(k)).get("cover")
-            if cover:
-                urls.append(str(cover))
+            blk = _ensure_dict(major.get(k))
+            for key in ("cover", "cover_url", "pic", "dynamic_cover", "first_frame"):
+                val = blk.get(key)
+                if isinstance(val, str) and val.strip():
+                    urls.append(val.strip())
 
     return _unique(urls)
 
@@ -447,7 +449,7 @@ class BilibiliDynamicPushPlugin(BasePlugin):
         "debug.output_dir 指定调试落盘；兼容 modules 列表结构与 dyn_forward；"
         "发图链路（Napcat 友好）：Base64 → URL → file:/// 兜底；视频动态自动携带封面图。"
     )
-    plugin_version = "1.1.0"
+    plugin_version = "1.2.1"
     plugin_author = "白狐"
     enable_plugin = True
 
@@ -503,7 +505,15 @@ class BilibiliDynamicPushPlugin(BasePlugin):
         self.timeout = int(get_conf("api.timeout", 10))
         self.prefer_old = bool(get_conf("api.prefer_old", True))
 
-        # 多组合路由：UID→群号并集
+        
+
+        # 时效 & 回填策略
+        self.max_push_age_hours = int(get_conf("monitor.max_push_age_hours", 48))
+        self.startup_ts = int(time.time())
+        self.push_on_first_fetch = bool(get_conf("monitor.push_on_first_fetch", False))
+        self.allow_backfill_hours = int(get_conf("monitor.allow_backfill_hours", 0))
+        self.cold_start_grace_hours = int(get_conf("monitor.cold_start_grace_hours", 0))
+# 多组合路由：UID→群号并集
         self.uid_groups_map: Dict[str, List[str]] = {}
         routes = get_conf("bilibili.routes", None)
         legacy_uids = as_list(get_conf("bilibili.uids", []))
@@ -677,6 +687,49 @@ class BilibiliDynamicPushPlugin(BasePlugin):
             except Exception:
                 pass
 
+
+        
+
+        # —— 首次获取（冷启动/新加UID）基线保护 ——
+        if not self.last_seen.get(uid):
+            pub_ts = self._get_publish_ts(item)
+            if not self.push_on_first_fetch:
+                self._log(f"[BilibiliDynamicPush] 🧊 UID={uid} 首次获取，建立基线(不回填)，last_seen <- {cur_id}")
+                self.last_seen[uid] = cur_id
+                self._save_state()
+                return
+            else:
+                # 允许首次回填，但仅限近 allow_backfill_hours 内
+                allow_age = int(self.allow_backfill_hours * 3600)
+                now = int(time.time())
+                if (not pub_ts) or (now - pub_ts) >= allow_age:
+                    self._log(f"[BilibiliDynamicPush] 🧊 UID={uid} 首次获取但过期(>{self.allow_backfill_hours}h)，仅建立基线，last_seen <- {cur_id}")
+                    self.last_seen[uid] = cur_id
+                    self._save_state()
+                    return
+                # 否则：pub_ts 在回填许可窗内，允许继续推送
+
+        # —— 冷启动回填限制（旧动态一律不回填，窗口由 cold_start_grace_hours 控制） ——
+        pub_ts = self._get_publish_ts(item)
+        if pub_ts and self.cold_start_grace_hours >= 0:
+            cutoff = self.startup_ts - int(self.cold_start_grace_hours * 3600)
+            if pub_ts < cutoff:
+                self._log(f"[BilibiliDynamicPush] 🧊 UID={uid} 冷启动回填拦截(pub<{cutoff})，仅更新last_seen <- {cur_id}")
+                self.last_seen[uid] = cur_id
+                self._save_state()
+                return
+# —— 时效阈值：避免回填过旧动态 ——
+        pub_ts = self._get_publish_ts(item)
+        now = int(time.time())
+        max_age = int(self.max_push_age_hours * 3600)
+        if pub_ts and (now - pub_ts) >= max_age:
+            age_h = int((now - pub_ts) / 3600)
+            self._log(f"[BilibiliDynamicPush] ⏩ UID={uid} 跳过过旧动态 (age={age_h}h ≥ {self.max_push_age_hours}h, id={cur_id})，仅更新last_seen")
+            self.last_seen[uid] = cur_id
+            self._save_state()
+            return
+
+
         self._push_dynamic(uid, _ensure_dict(item), groups)
         self.last_seen[uid] = cur_id
         self._save_state()
@@ -697,7 +750,25 @@ class BilibiliDynamicPushPlugin(BasePlugin):
             return status, data, text
         return last_status, b"", ""
 
-    # ---------------- WBI 签名 ----------------
+    
+
+    def _get_publish_ts(self, item: dict) -> int:
+        it = _ensure_dict(item)
+        basic = _ensure_dict(it.get("basic"))
+        ts = basic.get("pub_ts") or basic.get("pub_time")
+        if isinstance(ts, (int, float)) and ts > 0:
+            return int(ts)
+        modules = _ensure_dict(it.get("modules"))
+        ma = _ensure_dict(modules.get("module_author"))
+        ts = ma.get("pub_ts") or ma.get("ctime") or ma.get("timestamp")
+        if isinstance(ts, (int, float)) and ts > 0:
+            return int(ts)
+        desc = _ensure_dict(it.get("desc"))
+        ts = desc.get("timestamp") or desc.get("ctime")
+        if isinstance(ts, (int, float)) and ts > 0:
+            return int(ts)
+        return 0
+# ---------------- WBI 签名 ----------------
     MIXIN_KEY_ENC_TAB = [
         46,47,18,2,53,8,23,32,15,50,10,31,58,3,45,35,27,43,5,49,
         33,9,42,19,29,28,14,39,12,38,41,13,37,48,7,16,24,55,40,
@@ -1159,7 +1230,14 @@ class BilibiliDynamicPushPlugin(BasePlugin):
             md_major = module_dynamic.get("major") or module_dynamic
             if is_forward and forward_text:
                 text_content = ""
-            elif ("archive" in md_major) or ("dyn_archive" in md_major) or ("pgc" in md_major) or ("dyn_pgc" in md_major) or ("ugc_season" in md_major) or ("dyn_ugc_season" in md_major):
+            elif ("live" in md_major) or ("dyn_live" in md_major):
+                lv = _ensure_dict(md_major.get("live") or md_major.get("dyn_live"))
+                ltitle = _sanitize_text(lv.get("title") or "")
+                lroom = str(lv.get("room_id") or lv.get("roomid") or "").strip()
+                text_content = ("【直播】" + ltitle).strip() if ltitle else "【直播】"
+                if lroom:
+                    text_content += f"\n直播间：{lroom}"
+            elif ("dyn_archive" in md_major) or ("archive" in md_major) or ("pgc" in md_major) or ("dyn_pgc" in md_major) or ("ugc_season" in md_major) or ("dyn_ugc_season" in md_major):
                 text_content = "【视频】"
             elif cur_imgs:
                 text_content = f"【图集】共 {len(cur_imgs)} 张"
