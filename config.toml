@@ -3,6 +3,16 @@ silent = true     # 当true：日常信息日志全部静默；错误信息（�
 enable = true
 interval_minutes = 2      # 轮询间隔（分钟）；风控多时可调大到 3~5
 jitter_seconds = 15       # 抖动（避免整点风控）
+max_push_age_hours = 48
+
+# 首次获取（无 last_seen 时）是否直接推送
+# false = 只建立基线，不回填（推荐默认）
+# true  = 允许回填，但受 allow_backfill_hours 限制
+push_on_first_fetch = false
+
+# 冷启动回填拦截窗：启动时若动态发布时间 < (startup_ts - cold_start_grace_hours)，则不回填
+# 设 0 表示完全不回填启动前的动态；设 3~12 可允许回填最近几小时
+cold_start_grace_hours = 0
 
 [debug]
 dump_json  = false
@@ -39,3 +49,4 @@ per_image_delay_ms = 1600   # 每张图发送间隔
 [fallback]
 # 打不开新/老接口时，尝试 HTML 兜底解析
 enable_html = true
+
