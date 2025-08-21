@@ -1,52 +1,50 @@
+# ===========================
+# Bilibili 动态推送插件配置
+# 文件名：config.toml（与 plugin.py 同目录或按框架规则）
+# ===========================
+
 [monitor]
-silent = true     # 当true：日常信息日志全部静默；错误信息（例如发送失败、Cookie 失效、解析异常等）仍会输出。 当false：保持原先的详细日志。
-enable = true
-interval_minutes = 2      # 轮询间隔（分钟）；风控多时可调大到 3~5
-jitter_seconds = 15       # 抖动（避免整点风控）
-max_push_age_hours = 48
-
-# 首次获取（无 last_seen 时）是否直接推送
-# false = 只建立基线，不回填（推荐默认）
-# true  = 允许回填，但受 allow_backfill_hours 限制
-push_on_first_fetch = false
-
-# 冷启动回填拦截窗：启动时若动态发布时间 < (startup_ts - cold_start_grace_hours)，则不回填
-# 设 0 表示完全不回填启动前的动态；设 3~12 可允许回填最近几小时
-cold_start_grace_hours = 0
-
-[debug]
-dump_json  = false
-dump_uid   = ["XXXXXXXXXX"]
-output_dir = "./MaiBotOneKey/modules/MaiBot/plugins/bilibili_push_plugin/debug"
-
-[api]
-base_url = "https://api.bilibili.com"
-timeout = 10
-prefer_old = true 
-
-[bilibili]
-# 多组合（路由）配置：每个 routes 是一个“组合”，指定要监控的 UIDs 以及推送到的群号
-# 示例：组合一，把“甲”(举例 UID 36081646) 推送到两个群；组合二，把“乙”(举例 UID 114514) 推送到另外两个群
-[[bilibili.routes]]
-uids = ["36081646"]                  # 支持多个 UID (36081646是洛天依)
-groups = ["114514", "1919810"]  # 对应要推送到的QQ群号
-
-
-# 旧写法（可选，用作兜底；若保留，会与上面的 routes 聚合去重）
-# uids = ["36081646"]
-# groups = ["114514", "1919810"]
-
-# 建议配置 Cookie（SESSDATA 等），提高接口稳定性。没有也能跑，但更容易 412/风控。
-cookie = ""
+enable = true                      # 是否启用本插件总开关。false 则不启动监控线程
+interval_minutes = 3               # 轮询间隔（分钟）。过小易被风控，建议 ≥3
+jitter_seconds = 15                # 轮询抖动（秒），防止多个实例同秒访问
+silent = false                     # 静默模式。true 时仅打印错误日志，屏蔽普通日志
+ignore_history_minutes_on_boot = 10  # 启动“冷静期”（分钟）：插件刚启动时，如果最近一条动态发布时间早于该阈值，则只记录不推送，避免冷启动刷旧动态
 
 [image]
-send_images = true          # 需要时可关图
-downscale_width = 720       # 压缩宽度
-jpeg_quality = 85           # JPG 质量
-base64_chunk_limit = 5500000  # 最大 Base64 字节数（约5.5MB）
-per_image_delay_ms = 1600   # 每张图发送间隔
+send_images = true                 # 是否发送图片（图集/封面等）。false 则只发文字+链接
+force_base64 = true                # 发图优先使用 Base64（Napcat 更稳）。false 则优先直链
+base64_chunk_limit = 4200000       # Base64 数据大小上限（字节）。过大可能被风控或适配器拒绝
+downscale_width = 1080             # 发图前的限宽（像素）。较大图片会按等比缩小到此宽度
+jpeg_quality = 85                  # 发图转 JPG 时的质量（1-95）。越大越清晰也越大
+per_image_delay_ms = 1600          # 连续多张图片的发送间隔（毫秒），避免频率过高
+skip_many_images = false            # 开启多图禁发（默认 false）
+skip_many_images_threshold = 4     # 触发阈值：当图片数 ≥ 该值时不发图
+skip_many_images_text = "【图片数量较多，请去原动态查看】"  # 触发时追加在文本里的提示语
+
+[api]
+base_url = "https://api.bilibili.com"  # B 站 API 基地址，一般不改
+timeout = 10                        # 单次请求超时（秒）
+prefer_old = true                   # 优先使用旧接口(space_history)获取动态；若失败再试新接口。未登录或风控时旧接口更稳
+
+[bilibili]
+# 推荐写法：routes（可以配置多组 UID→群号 的路由）
+# “uids”为要监控的 UP 主 UID 列表；“groups”为要推送到的 QQ 群号列表（字符串）
+routes = [
+  { uids = ["123456", "654321"], groups = ["10001", "10002"] },  # 例：两个 UID 的动态推送到两个群
+  { uids = ["777777"],            groups = ["10001"] },           # 例：单个 UID 推送到一个群
+]
+
+# 兼容旧写法（与 routes 二选一；若两者同时写，插件会把旧写法的 UID 也并入路由）：
+# uids = ["123456"]               # 旧：所有这些 UID 的动态
+# groups = ["10001"]              # 旧：统一推送到这些群
+
+cookie = "SESSDATA=xxx; bili_jct=xxx; DedeUserID=xxx; ..."  # 整条 Cookie（单行、同一账号）。用于避免 -352 风控并解析昵称
+                                                            # ⚠️ 请粘贴浏览器里完整的 Cookie 片段，不要分多行
 
 [fallback]
-# 打不开新/老接口时，尝试 HTML 兜底解析
-enable_html = true
+enable_html = true                # 旧/新接口都失败时，尝试解析空间 HTML 作为最后兜底（可能拿不到准确时间）
 
+[debug]
+dump_json = false                 # 是否把解析后的数据落盘到 debug 目录（定位“无文字内容”等问题）
+dump_uid = []                     # 仅对这些 UID 落盘；留空表示对全部 UID 生效（当 dump_json = true 时）
+output_dir = ""                   # 自定义调试输出目录。留空则默认为插件目录下的 debug/
