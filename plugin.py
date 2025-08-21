@@ -13,7 +13,7 @@ from hashlib import md5
 from functools import reduce
 
 from src.plugin_system import BasePlugin, register_plugin
-from src.plugin_system.apis import send_api
+from src.plugin_system.apis import send_api, chat_api  # 0.10.0：新增 chat_api
 from src.common.logger import get_logger
 
 logger = get_logger("plugins.bilibili_dynamic_push_plugin")
@@ -164,19 +164,18 @@ def _extract_text_from_major(major: Any, at_resolver: Optional[Callable[[str], O
     parts: List[str] = []
 
     def pick_from_article(block: dict):
-        title = block.get("title") or block.get("title_text") or ""  # 优化：添加更多可能的标题键
-        summary = block.get("summary") or block.get("desc") or block.get("description") or ""  # 优化：添加更多描述键
+        title = block.get("title") or block.get("title_text") or ""
+        summary = block.get("summary") or block.get("desc") or block.get("description") or ""
         if title:
             parts.append(str(title))
         if summary and summary != title:
             parts.append(str(summary))
 
     def pick_from_archive(block: dict):
-        # 视频动态：优先标题（优化：仅标题，不追加简介）
+        # 视频动态：优先标题（仅标题，不追加简介）
         title = block.get("title") or block.get("title_text") or block.get("name") or ""
         if title:
             parts.append(str(title))
-        # 不追加 desc，以符合用户需求：仅发送标题
 
     def pick_from_opus(block: dict):
         title = block.get("title") or ""
@@ -192,7 +191,7 @@ def _extract_text_from_major(major: Any, at_resolver: Optional[Callable[[str], O
         o_nodes = _ensure_list(block.get("rich_text_nodes"))
         if o_nodes:
             parts.append(_stringify_rich_nodes(o_nodes, at_resolver=at_resolver))
-        for k in ("content", "desc", "text", "description", "intro", "summary"):  # 优化：添加更多键
+        for k in ("content", "desc", "text", "description", "intro", "summary"):
             v = _sanitize_text(block.get(k) or "") if isinstance(block.get(k), str) else ""
             if v:
                 parts.append(v)
@@ -208,7 +207,7 @@ def _extract_text_from_major(major: Any, at_resolver: Optional[Callable[[str], O
     if not isinstance(major, dict):
         return ""
 
-    # 支持 dyn_xxx 结构（优化：兼容 polymer 直接 dyn_archive 等）
+    # 支持 dyn_xxx 结构
     if "dyn_opus" in major:
         pick_from_opus(_ensure_dict(major.get("dyn_opus")))
     elif "opus" in major:
@@ -238,7 +237,7 @@ def _extract_text_from_major(major: Any, at_resolver: Optional[Callable[[str], O
         season = _ensure_dict(pgc.get("season"))
         ep = _ensure_dict(pgc.get("ep"))
         title = ep.get("title") or season.get("title") or ""
-        subtitle = ep.get("long_title") or ep.get("pub_time") or ep.get("desc") or ep.get("description") or ""  # 优化：添加描述
+        subtitle = ep.get("long_title") or ep.get("pub_time") or ep.get("desc") or ep.get("description") or ""
         if title:
             parts.append(str(title))
         if subtitle and subtitle != title:
@@ -335,7 +334,7 @@ def _collect_images_from_major(major: Any) -> List[str]:
     if not isinstance(major, dict):
         return urls
 
-    # 图文（优化：支持 dyn_draw）
+    # 图文（支持 dyn_draw）
     if "dyn_draw" in major:
         for it in (_ensure_dict(major.get("dyn_draw")).get("items") or []):
             src = _ensure_dict(it).get("src")
@@ -347,7 +346,7 @@ def _collect_images_from_major(major: Any) -> List[str]:
             if src:
                 urls.append(src)
 
-    # OPUS（也可能带图，支持 dyn_opus）
+    # OPUS（支持 dyn_opus）
     if "dyn_opus" in major:
         opus = _ensure_dict(major.get("dyn_opus"))
         for key in ("pics", "pictures", "images"):
@@ -391,7 +390,6 @@ def _collect_images_from_major(major: Any) -> List[str]:
         for c in _ensure_list(arc.get("covers")):
             if c:
                 urls.append(str(c))
-        # 某些场景封面在 arc["bvid_cover"] 或 arc["pic_url"]
         for key in ("bvid_cover", "pic_url"):
             val = arc.get(key)
             if isinstance(val, str) and val.strip():
@@ -405,7 +403,6 @@ def _collect_images_from_major(major: Any) -> List[str]:
         for c in _ensure_list(arc.get("covers")):
             if c:
                 urls.append(str(c))
-        # 某些场景封面在 arc["bvid_cover"] 或 arc["pic_url"]
         for key in ("bvid_cover", "pic_url"):
             val = arc.get(key)
             if isinstance(val, str) and val.strip():
@@ -414,11 +411,9 @@ def _collect_images_from_major(major: Any) -> List[str]:
     # 番剧/合集等也可能带封面（支持 dyn_pgc 等）
     for k in ("pgc", "dyn_pgc", "live", "dyn_live", "ugc_season", "dyn_ugc_season"):
         if k in major:
-            blk = _ensure_dict(major.get(k))
-            for key in ("cover", "cover_url", "pic", "dynamic_cover", "first_frame"):
-                val = blk.get(key)
-                if isinstance(val, str) and val.strip():
-                    urls.append(val.strip())
+            cover = _ensure_dict(major.get(k)).get("cover")
+            if cover:
+                urls.append(str(cover))
 
     return _unique(urls)
 
@@ -432,7 +427,7 @@ def _collect_images_from_module_dynamic(md_block: dict) -> List[str]:
         src = _ensure_dict(it).get("src")
         if src:
             urls.append(src)
-    # major 或直接 md_block（优化：兼容无 major 的结构，如 dyn_archive 直接）
+    # major 或直接 md_block（兼容无 major 的结构，如 dyn_archive 直接）
     major = md_block.get("major") or md_block
     urls.extend(_collect_images_from_major(major))
     return _unique(urls)
@@ -449,7 +444,7 @@ class BilibiliDynamicPushPlugin(BasePlugin):
         "debug.output_dir 指定调试落盘；兼容 modules 列表结构与 dyn_forward；"
         "发图链路（Napcat 友好）：Base64 → URL → file:/// 兜底；视频动态自动携带封面图。"
     )
-    plugin_version = "1.2.1"
+    plugin_version = "1.3.0"
     plugin_author = "白狐"
     enable_plugin = True
 
@@ -467,6 +462,26 @@ class BilibiliDynamicPushPlugin(BasePlugin):
 
     def _err(self, msg: str, *, flush: bool = True):
         print(msg, flush=flush)
+
+    # ---------------- 0.10.0 兼容：stream_id & 数据目录 ----------------
+    def _stream_id_for_group(self, group_id: str, platform: str = "qq") -> Optional[str]:
+        """根据群号获取聊天流ID（0.10.0 必需）"""
+        try:
+            stream = chat_api.get_stream_by_group_id(str(group_id), platform)
+            return getattr(stream, "stream_id", None)
+        except Exception as e:
+            self._err(f"[BilibiliDynamicPush] 获取群 {group_id} 的 stream_id 失败: {e}")
+            return None
+
+    def _get_data_dir(self) -> Path:
+        """不再依赖 get_data_dir；基于 plugin_dir 组织数据目录"""
+        try:
+            base = Path(getattr(self, "plugin_dir", "."))  # 0.10.0 推荐使用 plugin_dir
+        except Exception:
+            base = Path(".")
+        p = base / "data" / self.plugin_name
+        p.mkdir(parents=True, exist_ok=True)
+        return p
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -490,11 +505,16 @@ class BilibiliDynamicPushPlugin(BasePlugin):
         self.enable = bool(get_conf("monitor.enable", True))
         self.interval_seconds = max(1, int(get_conf("monitor.interval_minutes", 3))) * 60
         self.jitter_seconds = float(get_conf("monitor.jitter_seconds", 15))
-        self.silent = bool(get_conf("monitor.silent", False))  # ★ 静默开关
+        self.silent = bool(get_conf("monitor.silent", False))  # 静默开关
+
+        # 启动冷静期（新增）
+        self.ignore_history_minutes_on_boot = int(get_conf("monitor.ignore_history_minutes_on_boot", 180))
+        self._just_started = True
+        self._boot_time = time.time()
 
         # 发图控制
-        self.send_images = bool(get_conf("image.send_images", True))        # ★ 可关图
-        self.force_base64 = bool(get_conf("image.force_base64", True))      # Base64 优先
+        self.send_images = bool(get_conf("image.send_images", True))
+        self.force_base64 = bool(get_conf("image.force_base64", True))
         self.base64_chunk_limit = int(get_conf("image.base64_chunk_limit", 5_500_000))
         self.downscale_width = int(get_conf("image.downscale_width", 720))
         self.jpeg_quality = int(get_conf("image.jpeg_quality", 85))
@@ -505,15 +525,7 @@ class BilibiliDynamicPushPlugin(BasePlugin):
         self.timeout = int(get_conf("api.timeout", 10))
         self.prefer_old = bool(get_conf("api.prefer_old", True))
 
-        
-
-        # 时效 & 回填策略
-        self.max_push_age_hours = int(get_conf("monitor.max_push_age_hours", 48))
-        self.startup_ts = int(time.time())
-        self.push_on_first_fetch = bool(get_conf("monitor.push_on_first_fetch", False))
-        self.allow_backfill_hours = int(get_conf("monitor.allow_backfill_hours", 0))
-        self.cold_start_grace_hours = int(get_conf("monitor.cold_start_grace_hours", 0))
-# 多组合路由：UID→群号并集
+        # 多组合路由：UID→群号并集
         self.uid_groups_map: Dict[str, List[str]] = {}
         routes = get_conf("bilibili.routes", None)
         legacy_uids = as_list(get_conf("bilibili.uids", []))
@@ -566,12 +578,8 @@ class BilibiliDynamicPushPlugin(BasePlugin):
         if self.cookie:
             self._default_headers["Cookie"] = self.cookie
 
-        # 状态持久化
-        try:
-            data_dir = Path(self.get_data_dir())
-        except Exception:
-            data_dir = Path("./data/bilibili_dynamic_push_plugin")
-        data_dir.mkdir(parents=True, exist_ok=True)
+        # 状态持久化（适配：弃用 get_data_dir）
+        data_dir = self._get_data_dir()
         self.state_path = data_dir / "last_seen.json"
         self.last_seen: Dict[str, str] = self._load_state()
         self._stagnant: Dict[str, int] = {}
@@ -645,6 +653,9 @@ class BilibiliDynamicPushPlugin(BasePlugin):
                 self._handle_uid(uid, groups)
             except Exception as e:
                 self._err(f"[BilibiliDynamicPush] 处理 UID={uid} 出错: {e}")
+        # 首轮跑完，关闭启动冷静期
+        if self._just_started:
+            self._just_started = False
 
     def _handle_uid(self, uid: str, groups: List[str]):
         item = self._fetch_latest_old(uid) if self.prefer_old else self._fetch_latest_new(uid)
@@ -673,6 +684,17 @@ class BilibiliDynamicPushPlugin(BasePlugin):
             self._log(f"[BilibiliDynamicPush] 🔧 冷启动记忆 UID={uid} last_seen={cur_id}（不推送）")
             return
 
+        # 启动冷静期：首次轮询时，若“最近一条”的发布时间早于阈值，则不推送，只追位
+        if self._just_started:
+            pub_ts = self._get_dynamic_pub_ts(item, uid)
+            if isinstance(pub_ts, int) and pub_ts > 0:
+                age_min = (time.time() - pub_ts) / 60.0
+                if age_min >= float(self.ignore_history_minutes_on_boot):
+                    self._log(f"[BilibiliDynamicPush] ⏳ 启动冷静期生效：UID={uid} 最近一条已 {age_min:.1f} 分钟前发布，跳过推送，仅更新 last_seen -> {cur_id}")
+                    self.last_seen[uid] = cur_id
+                    self._save_state()
+                    return
+
         if int(cur_id) <= int(last_id):
             cnt = self._stagnant.get(uid, 0) + 1
             self._stagnant[uid] = cnt
@@ -686,49 +708,6 @@ class BilibiliDynamicPushPlugin(BasePlugin):
                 self._dump_module_json(uid, item, reason="before_push")
             except Exception:
                 pass
-
-
-        
-
-        # —— 首次获取（冷启动/新加UID）基线保护 ——
-        if not self.last_seen.get(uid):
-            pub_ts = self._get_publish_ts(item)
-            if not self.push_on_first_fetch:
-                self._log(f"[BilibiliDynamicPush] 🧊 UID={uid} 首次获取，建立基线(不回填)，last_seen <- {cur_id}")
-                self.last_seen[uid] = cur_id
-                self._save_state()
-                return
-            else:
-                # 允许首次回填，但仅限近 allow_backfill_hours 内
-                allow_age = int(self.allow_backfill_hours * 3600)
-                now = int(time.time())
-                if (not pub_ts) or (now - pub_ts) >= allow_age:
-                    self._log(f"[BilibiliDynamicPush] 🧊 UID={uid} 首次获取但过期(>{self.allow_backfill_hours}h)，仅建立基线，last_seen <- {cur_id}")
-                    self.last_seen[uid] = cur_id
-                    self._save_state()
-                    return
-                # 否则：pub_ts 在回填许可窗内，允许继续推送
-
-        # —— 冷启动回填限制（旧动态一律不回填，窗口由 cold_start_grace_hours 控制） ——
-        pub_ts = self._get_publish_ts(item)
-        if pub_ts and self.cold_start_grace_hours >= 0:
-            cutoff = self.startup_ts - int(self.cold_start_grace_hours * 3600)
-            if pub_ts < cutoff:
-                self._log(f"[BilibiliDynamicPush] 🧊 UID={uid} 冷启动回填拦截(pub<{cutoff})，仅更新last_seen <- {cur_id}")
-                self.last_seen[uid] = cur_id
-                self._save_state()
-                return
-# —— 时效阈值：避免回填过旧动态 ——
-        pub_ts = self._get_publish_ts(item)
-        now = int(time.time())
-        max_age = int(self.max_push_age_hours * 3600)
-        if pub_ts and (now - pub_ts) >= max_age:
-            age_h = int((now - pub_ts) / 3600)
-            self._log(f"[BilibiliDynamicPush] ⏩ UID={uid} 跳过过旧动态 (age={age_h}h ≥ {self.max_push_age_hours}h, id={cur_id})，仅更新last_seen")
-            self.last_seen[uid] = cur_id
-            self._save_state()
-            return
-
 
         self._push_dynamic(uid, _ensure_dict(item), groups)
         self.last_seen[uid] = cur_id
@@ -750,25 +729,7 @@ class BilibiliDynamicPushPlugin(BasePlugin):
             return status, data, text
         return last_status, b"", ""
 
-    
-
-    def _get_publish_ts(self, item: dict) -> int:
-        it = _ensure_dict(item)
-        basic = _ensure_dict(it.get("basic"))
-        ts = basic.get("pub_ts") or basic.get("pub_time")
-        if isinstance(ts, (int, float)) and ts > 0:
-            return int(ts)
-        modules = _ensure_dict(it.get("modules"))
-        ma = _ensure_dict(modules.get("module_author"))
-        ts = ma.get("pub_ts") or ma.get("ctime") or ma.get("timestamp")
-        if isinstance(ts, (int, float)) and ts > 0:
-            return int(ts)
-        desc = _ensure_dict(it.get("desc"))
-        ts = desc.get("timestamp") or desc.get("ctime")
-        if isinstance(ts, (int, float)) and ts > 0:
-            return int(ts)
-        return 0
-# ---------------- WBI 签名 ----------------
+    # ---------------- WBI 签名 ----------------
     MIXIN_KEY_ENC_TAB = [
         46,47,18,2,53,8,23,32,15,50,10,31,58,3,45,35,27,43,5,49,
         33,9,42,19,29,28,14,39,12,38,41,13,37,48,7,16,24,55,40,
@@ -1056,6 +1017,8 @@ class BilibiliDynamicPushPlugin(BasePlugin):
                             "module_desc": {"text": text_content},
                             "module_dynamic": (forward_major if forward_major else md_block),
                         },
+                        # 为后续取时间戳，尽量保留 desc（如果上层未使用可忽略）
+                        "desc": {"timestamp": int(desc.get("timestamp") or 0)},
                     }
                     if dynamic_id_str:
                         out.append(built)
@@ -1118,31 +1081,27 @@ class BilibiliDynamicPushPlugin(BasePlugin):
         uname = _ensure_dict(modules.get("module_author")).get("name") \
                 or _ensure_dict(cand.get("user")).get("name") or f"UID:{uid}"
 
-        # 优化：使用统一的提取函数，确保视频标题被正确提取（即使在 HTML 结构中）
+        # 统一提取文本
         text_content = _extract_text_from_desc(modules.get("module_desc"))
         if not text_content:
             md = _ensure_dict(modules.get("module_dynamic"))
             text_content = _extract_text_from_desc(md.get("desc"))
         if not text_content:
-            # 兼容无 major 的结构
             md_major = md.get("major") or md
             text_content = _extract_text_from_major(md_major)
-        # 额外兜底旧结构
         if not text_content:
             text_content = _ensure_dict(cand.get("item")).get("description") or cand.get("title") or ""
 
+        # 图片/封面
         imgs = []
         md = _ensure_dict(modules.get("module_dynamic"))
-        # 兼容无 major
         md_major = md.get("major") or md
-        # 图文
         if "draw" in md_major or "dyn_draw" in md_major:
             draw = _ensure_dict(md_major.get("draw") or md_major.get("dyn_draw"))
             for it in _ensure_list(draw.get("items")):
                 it = _ensure_dict(it)
                 if it.get("src"):
                     imgs.append({"src": it["src"]})
-        # 视频封面（HTML 中常见：card.pic / major.archive.cover）
         video_cover = None
         arc = _ensure_dict(md_major.get("archive") or md_major.get("dyn_archive"))
         for key in ("cover", "cover_url", "pic", "dynamic_cover", "first_frame"):
@@ -1172,7 +1131,34 @@ class BilibiliDynamicPushPlugin(BasePlugin):
                 "module_desc": {"text": text_content},
                 "module_dynamic": md_block,
             },
+            # HTML 兜底通常拿不到可靠时间
         }
+
+    # ---------------- 提取发布时间（新增，用于启动冷静期判断） ----------------
+    def _get_dynamic_pub_ts(self, item: dict, uid: str) -> Optional[int]:
+        """
+        从不同来源结构里提取动态的发布时间（Unix 秒）。
+        NEW(polymer): basic.pub_ts 或 modules.module_author.pub_ts
+        OLD(space_history): desc.timestamp（已在 _fetch_latest_old 组装到 built['desc']['timestamp']）
+        HTML兜底: 通常无可靠字段，返回 None
+        """
+        it = _ensure_dict(item)
+        # NEW/polymer
+        basic = _ensure_dict(it.get("basic"))
+        ts = basic.get("pub_ts")
+        if isinstance(ts, int) and ts > 0:
+            return ts
+        modules = _normalize_modules(it.get("modules"))
+        ma = _ensure_dict(modules.get("module_author"))
+        ts = ma.get("pub_ts")
+        if isinstance(ts, int) and ts > 0:
+            return ts
+        # OLD/space_history
+        desc = _ensure_dict(it.get("desc"))
+        ts = desc.get("timestamp")
+        if isinstance(ts, int) and ts > 0:
+            return ts
+        return None
 
     # ---------------- 公共抽取/发送 ----------------
     def _extract_for_display(self, uid: str, dynamic_data: dict):
@@ -1187,11 +1173,10 @@ class BilibiliDynamicPushPlugin(BasePlugin):
         text_content = _extract_text_from_desc(module_desc, at_resolver=self._resolve_uname)
 
         if not text_content:
-            # 兼容无 major 的结构（如 dyn_archive 直接在 module_dynamic）
             md_major = module_dynamic.get("major") or module_dynamic
             text_content = _extract_text_from_major(md_major, at_resolver=self._resolve_uname)
 
-        # 转发识别：优先 polymer 的 dyn_forward，其次老的 orig
+        # 转发识别
         forward_author, forward_text, forward_imgs = "", "", []
         is_forward = False
 
@@ -1225,19 +1210,12 @@ class BilibiliDynamicPushPlugin(BasePlugin):
         # 当前动态的图片/封面（非转发）
         cur_imgs = [] if is_forward else _collect_images_from_module_dynamic(module_dynamic)
 
-        # 如果没有任何文本，给一个合理的占位（图集/视频）
+        # 若无文本，给占位（图集/视频）
         if not text_content:
             md_major = module_dynamic.get("major") or module_dynamic
             if is_forward and forward_text:
                 text_content = ""
-            elif ("live" in md_major) or ("dyn_live" in md_major):
-                lv = _ensure_dict(md_major.get("live") or md_major.get("dyn_live"))
-                ltitle = _sanitize_text(lv.get("title") or "")
-                lroom = str(lv.get("room_id") or lv.get("roomid") or "").strip()
-                text_content = ("【直播】" + ltitle).strip() if ltitle else "【直播】"
-                if lroom:
-                    text_content += f"\n直播间：{lroom}"
-            elif ("dyn_archive" in md_major) or ("archive" in md_major) or ("pgc" in md_major) or ("dyn_pgc" in md_major) or ("ugc_season" in md_major) or ("dyn_ugc_season" in md_major):
+            elif ("archive" in md_major) or ("dyn_archive" in md_major) or ("pgc" in md_major) or ("dyn_pgc" in md_major) or ("ugc_season" in md_major) or ("dyn_ugc_season" in md_major):
                 text_content = "【视频】"
             elif cur_imgs:
                 text_content = f"【图集】共 {len(cur_imgs)} 张"
@@ -1268,20 +1246,28 @@ class BilibiliDynamicPushPlugin(BasePlugin):
             "images": (forward_imgs if is_forward else cur_imgs),
         }
 
-    # ---------------- 发送封装 ----------------
+    # ---------------- 发送封装（0.10.0 基于 stream_id） ----------------
     def _send_text(self, group_id: str, text: str) -> bool:
         try:
             from asyncio import get_event_loop, new_event_loop, set_event_loop, iscoroutine
+            sid = self._stream_id_for_group(group_id)
+            if not sid:
+                self._err(f"[BilibiliDynamicPush] 未找到群 {group_id} 的聊天流，文本发送跳过")
+                return False
             try:
                 loop = get_event_loop()
             except RuntimeError:
                 loop = new_event_loop()
                 set_event_loop(loop)
-            coro = send_api.custom_message(
+            coro = send_api.custom_to_stream(
                 message_type="text",
                 content=text,
-                target_id=group_id,
-                is_group=True
+                stream_id=sid,
+                display_message=text,
+                typing=False,
+                set_reply=False,
+                storage_message=True,
+                show_log=not getattr(self, "silent", False),
             )
             ok = loop.run_until_complete(coro) if iscoroutine(coro) else bool(coro)
             return bool(ok)
@@ -1392,6 +1378,11 @@ class BilibiliDynamicPushPlugin(BasePlugin):
         """按顺序：Base64 → URL → file:/// 兜底；纯 Base64 字符串，不卡前缀。"""
         from asyncio import get_event_loop, new_event_loop, set_event_loop
 
+        sid = self._stream_id_for_group(group_id)
+        if not sid:
+            self._err(f"[BilibiliDynamicPush] 未找到群 {group_id} 的聊天流，发图跳过")
+            return False
+
         # A) Base64 首选（Napcat 最稳）
         if self.force_base64:
             b64 = self._prepare_image_base64(img_url)
@@ -1403,11 +1394,15 @@ class BilibiliDynamicPushPlugin(BasePlugin):
                         loop = new_event_loop()
                         set_event_loop(loop)
                     ok = loop.run_until_complete(
-                        send_api.custom_message(
+                        send_api.custom_to_stream(
                             message_type="image",
-                            content=b64,          # ⚠️ 只放纯 Base64，不加 base64://
-                            target_id=group_id,
-                            is_group=True
+                            content=b64,          # 只放纯 Base64，不加 base64://
+                            stream_id=sid,
+                            display_message="",
+                            typing=False,
+                            set_reply=False,
+                            storage_message=True,
+                            show_log=not getattr(self, "silent", False),
                         )
                     )
                     if ok:
@@ -1423,11 +1418,15 @@ class BilibiliDynamicPushPlugin(BasePlugin):
                 loop = new_event_loop()
                 set_event_loop(loop)
             ok = loop.run_until_complete(
-                send_api.custom_message(
+                send_api.custom_to_stream(
                     message_type="image",
                     content=img_url,
-                    target_id=group_id,
-                    is_group=True
+                    stream_id=sid,
+                    display_message="",
+                    typing=False,
+                    set_reply=False,
+                    storage_message=True,
+                    show_log=not getattr(self, "silent", False),
                 )
             )
             if ok:
@@ -1439,7 +1438,7 @@ class BilibiliDynamicPushPlugin(BasePlugin):
         try:
             raw = self._download_bytes(img_url)
             if raw:
-                tmpdir = Path(self.get_data_dir()) / "tmp_images"
+                tmpdir = self._get_data_dir() / "tmp_images"
                 tmpdir.mkdir(parents=True, exist_ok=True)
                 fname = md5((img_url + str(time.time())).encode("utf-8")).hexdigest() + ".jpg"
                 fpath = tmpdir / fname
@@ -1452,11 +1451,15 @@ class BilibiliDynamicPushPlugin(BasePlugin):
                     loop = new_event_loop()
                     set_event_loop(loop)
                 ok = loop.run_until_complete(
-                    send_api.custom_message(
+                    send_api.custom_to_stream(
                         message_type="image",
                         content=local_uri,
-                        target_id=group_id,
-                        is_group=True
+                        stream_id=sid,
+                        display_message="",
+                        typing=False,
+                        set_reply=False,
+                        storage_message=True,
+                        show_log=not getattr(self, "silent", False),
                     )
                 )
                 if ok:
