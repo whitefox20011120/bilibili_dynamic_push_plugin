@@ -5,7 +5,7 @@
 enable = true
 
 # 轮询间隔（分钟）。过小易被风控，建议 ≥3
-interval_minutes = 3               
+interval_minutes = 1               
 
 # 轮询抖动（秒），防止多个实例同秒访问
 jitter_seconds = 15
@@ -82,4 +82,5 @@ dump_uid = []
 
 # 自定义调试输出目录。留空则默认为插件目录下的 debug/
 output_dir = ""                   
+
 
