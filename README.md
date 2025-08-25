@@ -17,7 +17,7 @@ pip install pillow beautifulsoup4
 
 ## 1. 安装插件
 
-1) 将插件文件夹放到你的机器人插件目录（例如：`modules/MaiBot/plugins/bilibili_push_plugin/`）。  
+1) 将插件文件夹放到你的机器人插件目录（例如：`modules/MaiBot/plugins/bilibili_dynamic_push_plugin/`）。  
 2) 确保其中包含 `plugin.py`。  
 3) 在同目录创建并编辑 `config.toml`（下一节有模板与说明）。
 
