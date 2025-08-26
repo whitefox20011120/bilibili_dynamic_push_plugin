@@ -4,7 +4,7 @@
 
 ## 0. 准备条件
 
-- 已部署并可正常发送消息的 QQ 机器人（Napcat 适配器已就绪）。
+- 已部署并可正常发送消息的maimai。
 - Python 环境可用（建议 3.10+）。
 - （可选）已安装 `pillow` 用于压缩/转 JPG、`beautifulsoup4` 用于 HTML 兜底解析。
 
@@ -25,7 +25,7 @@ pip install pillow beautifulsoup4
 
 ## 2. 配置插件
 
-在 `bilibili_push_plugin` 目录下新建 `config.toml`，按需修改。**最少需要**：
+在 `bilibili_dynamic_push_plugin` 目录下新建 `config.toml`，按需修改。**最少需要**：
 - 配好要监控的 UID 和要推送的群号；
 -（强烈建议）填入你的 B 站 Cookie，以减少风控与昵称解析失败。
 
