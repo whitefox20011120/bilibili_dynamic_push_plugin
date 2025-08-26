@@ -12,7 +12,7 @@
     "min_version": "0.10.0",
     "max_version": "0.10.1"
   },
-  "homepage_url": "https://github.com/whitefox20011120",
+  "homepage_url": "https://github.com/whitefox20011120/bilibili_dynamic_push_plugin",
   "repository_url": "https://github.com/whitefox20011120/bilibili_dynamic_push_plugin",
   "config_file_name": "config.toml",
   "keywords": [
