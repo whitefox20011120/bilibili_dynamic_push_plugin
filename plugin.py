@@ -4,7 +4,7 @@ import base64
 import aiohttp
 import os
 import time
-import random  # [新增] 用于计算随机抖动
+import random  
 from typing import Dict, Any, List, Optional, Tuple, Type
 
 from src.common.logger import get_logger
@@ -473,3 +473,4 @@ class BiliPlugin(BasePlugin):
         return [
             (BiliCommand.get_command_info(), BiliCommand)
         ]
+
