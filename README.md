@@ -1,4 +1,4 @@
-# Bilibili Dynamic Subscription Plugin (B站动态/直播监控插件)
+# Bilibili Dynamic Plugin (B站动态/直播监控插件)
 
 这是一个用于监控 Bilibili UP主 **动态更新** 和 **直播状态** 的插件。支持多群订阅、多用户监控，并具备防检测的随机查询间隔机制。
 
