@@ -1,0 +1,2 @@
+bilibili-api-python>=16.2.0
+aiohttp
