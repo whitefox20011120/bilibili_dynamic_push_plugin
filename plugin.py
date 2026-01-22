@@ -62,7 +62,7 @@ class BiliUtils:
     
     @staticmethod
     def format_duration(seconds: float) -> str:
-        """格式化秒数为 时:分:秒"""
+        # 格式化秒数为 时:分:秒
         m, s = divmod(int(seconds), 60)
         h, m = divmod(m, 60)
         if h > 0:
@@ -226,7 +226,7 @@ class BiliMonitor:
             for item in items:
                 curr_id = str(item['id_str'])
                 
-                # [核心修复] 过滤掉 B站自动生成的直播动态
+                # 过滤B站自动生成的直播动态
                 # 1. 检查一级类型
                 if item.get('type') == 'DYNAMIC_TYPE_LIVE_RCMD':
                     continue
@@ -591,3 +591,4 @@ class BiliPlugin(BasePlugin):
         return [
             (BiliCommand.get_command_info(), BiliCommand)
         ]
+
