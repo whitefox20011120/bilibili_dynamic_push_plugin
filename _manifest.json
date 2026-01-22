@@ -1,31 +1,27 @@
 {
   "manifest_version": 1,
-  "name": "B站动态推送插件",
-  "version": "1.3.0",
-  "description": "定时检测B站UP主动态并推送到指定QQ群（跳过置顶、支持多UID/多群、启动日志提示）。",
+  "name": "bilibili_dynamic_push",
+  "version": "1.0.0",
+  "description": "基于MaiBot的B站动态订阅插件，支持多UP主、多群组推送，自动解析图文、视频封面及转发动态",
   "author": {
     "name": "白狐",
-    "url": "https://github.com/whitefox20011120"
+    "url": ""
   },
-  "license": "AGPL-3.0",
+  "license": "MIT",
   "host_application": {
-    "min_version": "0.9.0"
+    "min_version": "0.10.0"
   },
-  "homepage_url": "https://github.com/whitefox20011120/bilibili_dynamic_push_plugin",
-  "repository_url": "https://github.com/whitefox20011120/bilibili_dynamic_push_plugin",
-  "config_file_name": "config.toml",
   "keywords": [
     "bilibili",
-    "动态",
-    "自动推送",
-    "UP主",
-    "QQ"
+    "动态订阅",
+    "推送",
+    "监控",
+    "UP主"
   ],
   "categories": [
     "automation",
-    "bilibili",
-    "push",
-    "Utility Tools"
+    "entertainment",
+    "utility"
   ],
   "repository_url": "",
   "default_locale": "zh-CN",
@@ -33,13 +29,15 @@
     "is_built_in": false,
     "components": [
       {
-        "type": "action",
-        "name": "auto_push",
-        "description": "自动监控UP主动态并推送到QQ群"
+        "type": "command",
+        "name": "bili_control",
+        "description": "B站订阅插件"
       }
     ]
   },
   "python_dependencies": [
+    "bilibili-api-python>=16.2.0",
     "aiohttp"
-  ]
+  ],
+  "id": "MaiBotUser.bilibili_dynamic_subscription"
 }
