@@ -5,12 +5,14 @@
   "description": "基于MaiBot的B站动态订阅插件，支持多UP主、多群组推送，自动解析图文、视频封面及转发动态",
   "author": {
     "name": "白狐",
-    "url": ""
+    "url": "https://github.com/whitefox20011120"
   },
   "license": "MIT",
   "host_application": {
-    "min_version": "0.10.0"
+    "min_version": "0.12.0"
   },
+  "homepage_url": "https://github.com/whitefox20011120/bilibili_dynamic_push_plugin",
+  "repository_url": "https://github.com/whitefox20011120/bilibili_dynamic_push_plugin",
   "keywords": [
     "bilibili",
     "动态订阅",
