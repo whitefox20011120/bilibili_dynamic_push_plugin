@@ -1,6 +1,6 @@
 {
   "manifest_version": 1,
-  "name": "bilibili_dynamic_push",
+  "name": "B站动态推送",
   "version": "1.5.0",
   "description": "基于MaiBot的B站动态订阅插件，支持多UP主、多群组推送，自动解析图文、视频封面及转发动态",
   "author": {
