@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "name": "B站动态推送",
   "version": "1.5.0",
-  "description": "基于MaiBot的B站动态订阅插件，支持多UP主、多群组推送，自动解析图文、视频封面及转发动态",
+  "description": "适用于MaiBot的B站动态订阅插件，支持多UP主、多群组推送，自动解析图文、视频封面及转发动态",
   "author": {
     "name": "白狐",
     "url": "https://github.com/whitefox20011120"
