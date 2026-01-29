@@ -27,6 +27,7 @@
   "default_locale": "zh-CN",
   "plugin_info": {
     "is_built_in": false,
+    "plugin_type": "utility",
     "components": [
       {
         "type": "command",
