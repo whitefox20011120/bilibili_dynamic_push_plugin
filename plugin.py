@@ -22,7 +22,7 @@ from src.plugin_system import (
 from src.plugin_system.apis import send_api, chat_api
 from bilibili_api import user, Credential
 
-logger = get_logger("bilibili_monitor")
+logger = get_logger("bilibili_dynamic_push")
 
 # 1. 辅助工具类
 class BiliUtils:
@@ -553,7 +553,7 @@ class BiliCommand(BaseCommand):
 
 @register_plugin
 class BiliPlugin(BasePlugin):
-    plugin_name = "bilibili_dynamic_subscription"
+    plugin_name = "bilibili_dynamic_push"
     enable_plugin = True
     dependencies = []
     python_dependencies = ["bilibili_api", "aiohttp"]
@@ -591,4 +591,5 @@ class BiliPlugin(BasePlugin):
         return [
             (BiliCommand.get_command_info(), BiliCommand)
         ]
+
 
