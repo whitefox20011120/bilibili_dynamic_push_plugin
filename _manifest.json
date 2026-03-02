@@ -40,5 +40,5 @@
     "bilibili-api-python>=16.2.0",
     "aiohttp"
   ],
-  "id": "MaiBotUser.bilibili_dynamic_subscription"
+  "id": "whitefox20011120.bilibili_dynamic_push_plugin"
 }
