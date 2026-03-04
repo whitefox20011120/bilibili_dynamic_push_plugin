@@ -14,7 +14,7 @@
 * 🏁 下播提醒。
 
 
-* **防检测机制**：支持配置查询间隔抖动（Jitter），模拟真人行为，降低被 B 站 API 封禁的风险。
+* **防检测机制**：支持配置查询间隔抖动，模拟真人行为，降低被B站API封禁的风险。
 
 ## 📦 依赖项
 
@@ -36,21 +36,20 @@ enabled = true  # 插件总开关
 [settings]
 poll_interval = 120    # 基础查询周期（秒），建议不低于 60
 poll_jitter = 10       # 随机抖动时间（秒）。
-                       # 实际查询间隔 = base ± jitter。
                        # 例如：设为 120 和 10，则每次间隔在 110s~130s 之间随机。
 
 max_images = 3         # 单条推送最大图片数，超过此数量将不发送图片，仅发送链接。
 
 [settings.credential]
 # B站凭证（可选，建议配置以提高访问稳定性或查看受限内容）
-# 获取方式：浏览器登录B站 -> F12 -> Application -> Cookies
+# 获取方式：浏览器登录B站 -> F12 -> Application（应用） -> Cookies（左边那一堆），去 https://www.bilibili.com 那里
 sessdata = "your_sessdata_here"
 bili_jct = "your_bili_jct_here"
 buvid3 = "your_buvid3_here"
 
 [subscriptions]
 # 订阅列表
-# uid: UP主的数字ID
+# uid: UP主的UID（多个ID请使用uids）
 # groups: 需要推送到的群号列表
 users = [
     { uid = "114514", groups = ["12345678", "87654321"] },
