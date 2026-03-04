@@ -23,16 +23,13 @@
   "categories": [
     "Utility Tools"
   ],
-  "repository_url": "",
-  "default_locale": "zh-CN",
   "plugin_info": {
     "is_built_in": false,
-    "plugin_type": "utility",
     "components": [
       {
         "type": "command",
         "name": "bili_control",
-        "description": "B站订阅插件"
+        "description": "B站订阅"
       }
     ]
   },
