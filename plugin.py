@@ -5,6 +5,7 @@ import aiohttp
 import os
 import time
 import random
+import re
 from datetime import datetime
 from urllib.parse import unquote
 from typing import Dict, Any, List, Optional, Tuple, Type
@@ -77,10 +78,12 @@ class BiliMonitor:
         self.history = BiliUtils.load_history()
         self.credential = None
         self._tasks = []
+        self.config_getter = None  # 用于存储配置获取器
 
     async def start(self, config_getter):
         if self.running: return
         self.running = True
+        self.config_getter = config_getter  # 启动时保存配置获取器
         logger.info("启动 Bilibili 监控任务...")
         
         cred_dict = config_getter("settings.credential")
@@ -398,15 +401,28 @@ class BiliMonitor:
             module_dynamic = modules.get('module_dynamic') or {}
             module_author = modules.get('module_author') or {}
             
+            main_text, main_images = self._extract_major_data(module_dynamic)
+            desc_text = (module_dynamic.get('desc') or {}).get('text', '')
+
+            # 拦截中奖动态
+            ignore_lottery = True  # 默认开启拦截
+            if self.config_getter:
+                val = self.config_getter("settings.ignore_lottery")
+                if val is not None:
+                    ignore_lottery = val
+            
+            if ignore_lottery:
+                full_text_for_check = f"{desc_text}\n{main_text}"
+                if re.search(r'恭喜@.*?中奖.*?详情请点击.*?查看', full_text_for_check, re.DOTALL):
+                    logger.info(f"🛑 拦截到开奖通知动态 (ID: {id_str})，已丢弃，不进行推送。")
+                    return None
+
             result = {
                 "type": "unknown", "text": "", "images": [], 
                 "url": f"https://t.bilibili.com/{id_str}",
                 "author": module_author.get('name', 'UP主')
             }
 
-            main_text, main_images = self._extract_major_data(module_dynamic)
-            desc_text = (module_dynamic.get('desc') or {}).get('text', '')
-            
             if desc_text: result['text'] += desc_text
             if main_text: result['text'] += f"\n{main_text}"
             result['images'].extend(main_images)
@@ -568,7 +584,8 @@ class BiliPlugin(BasePlugin):
             "poll_jitter": ConfigField(int, 10, "轮询抖动秒数(实际=基准±抖动)"),
             "admin_qqs": ConfigField(list, [], "管理员QQ列表"),
             "credential": ConfigField(dict, {}, "Cookie"),
-            "max_images": ConfigField(int, 3, "最大图片数")
+            "max_images": ConfigField(int, 3, "最大图片数"),
+            "ignore_lottery": ConfigField(bool, True, "自动丢弃开奖动态")
         },
         "subscriptions": {
             "users": ConfigField(list, [
@@ -591,5 +608,3 @@ class BiliPlugin(BasePlugin):
         return [
             (BiliCommand.get_command_info(), BiliCommand)
         ]
-
-
