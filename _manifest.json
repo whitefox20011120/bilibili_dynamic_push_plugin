@@ -1,7 +1,7 @@
 {
   "manifest_version": 1,
   "name": "B站动态推送",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "description": "适用于MaiBot的B站动态订阅插件",
   "author": {
     "name": "白狐",
