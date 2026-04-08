@@ -9,7 +9,7 @@
   },
   "license": "MIT",
   "host_application": {
-    "min_version": "0.10.0"
+    "min_version": "1.0.0"
   },
   "homepage_url": "https://github.com/whitefox20011120/bilibili_dynamic_push_plugin",
   "repository_url": "https://github.com/whitefox20011120/bilibili_dynamic_push_plugin",
@@ -25,6 +25,7 @@
   ],
   "plugin_info": {
     "is_built_in": false,
+    "plugin_type": "general",
     "components": [
       {
         "type": "command",
@@ -32,10 +33,5 @@
         "description": "B站订阅"
       }
     ]
-  },
-  "python_dependencies": [
-    "bilibili-api-python>=16.2.0",
-    "aiohttp"
-  ],
-  "id": "whitefox20011120.bilibili_dynamic_push_plugin"
+  }
 }
