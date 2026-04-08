@@ -25,7 +25,7 @@ from bilibili_api import user, Credential
 
 logger = get_logger("bilibili_dynamic_push")
 
-# 1. 辅助工具类
+# ================= 1. 辅助工具类 =================
 class BiliUtils:
     @staticmethod
     async def url_to_base64(url: str) -> Optional[str]:
@@ -63,7 +63,6 @@ class BiliUtils:
     
     @staticmethod
     def format_duration(seconds: float) -> str:
-        # 格式化秒数为 时:分:秒
         m, s = divmod(int(seconds), 60)
         h, m = divmod(m, 60)
         if h > 0:
@@ -71,24 +70,23 @@ class BiliUtils:
         else:
             return f"{m}分{s}秒"
 
-# 2. 核心监控逻辑
+# ================= 2. 核心监控逻辑 =================
 class BiliMonitor:
     def __init__(self):
         self.running = False
         self.history = BiliUtils.load_history()
         self.credential = None
         self._tasks = []
-        self.config_getter = None  # 用于存储配置获取器
+        self.config_getter = None 
 
     async def start(self, config_getter):
         if self.running: return
         self.running = True
-        self.config_getter = config_getter  # 启动时保存配置获取器
+        self.config_getter = config_getter
         logger.info("启动 Bilibili 监控任务...")
         
         cred_dict = config_getter("settings.credential")
         if cred_dict and isinstance(cred_dict, dict):
-            # 自动解码 Cookie 值
             valid_cred = {}
             for k, v in cred_dict.items():
                 if v:
@@ -156,7 +154,6 @@ class BiliMonitor:
 
                 logger.info(f"🔄 检测中... (下次检测将在 {actual_interval}s 后)")
 
-                # 预处理：合并同一 UID 的所有目标群组
                 uid_to_stream_ids = {}
 
                 for sub in subs:
@@ -186,7 +183,6 @@ class BiliMonitor:
                             uid_to_stream_ids[uid] = set()
                         uid_to_stream_ids[uid].update(current_entry_stream_ids)
 
-                # 开始遍历去重后的 UID 进行检测
                 for uid, stream_ids_set in uid_to_stream_ids.items():
                     target_stream_ids = list(stream_ids_set)
                     if not target_stream_ids: continue
@@ -229,12 +225,9 @@ class BiliMonitor:
             for item in items:
                 curr_id = str(item['id_str'])
                 
-                # 过滤B站自动生成的直播动态
-                # 1. 检查一级类型
                 if item.get('type') == 'DYNAMIC_TYPE_LIVE_RCMD':
                     continue
                 
-                # 2. 检查二级类型 (Major Type)
                 try:
                     major_type = item.get('modules', {}).get('module_dynamic', {}).get('major', {}).get('type')
                     if major_type == 'MAJOR_TYPE_LIVE_RCMD':
@@ -272,7 +265,6 @@ class BiliMonitor:
             u = user.User(int(uid), credential=self.credential)
             raw_info = await u.get_live_info()
             
-            # 解析嵌套数据结构
             live_room = raw_info.get('live_room', {})
             current_status = live_room.get('liveStatus', 0)
             room_title = live_room.get('title', '直播间')
@@ -294,7 +286,6 @@ class BiliMonitor:
                 BiliUtils.save_history(self.history)
                 return
 
-            # 开播 
             if current_status == 1 and last_status == 0:
                 logger.info(f"UID {uid} 开播")
                 current_time = time.time()
@@ -308,7 +299,6 @@ class BiliMonitor:
                 await self.push_simple(msg, cover, stream_ids)
                 user_hist['live_start_time'] = current_time
             
-            # 下播 
             elif current_status == 0 and last_status == 1:
                 logger.info(f"UID {uid} 下播")
                 
@@ -404,8 +394,7 @@ class BiliMonitor:
             main_text, main_images = self._extract_major_data(module_dynamic)
             desc_text = (module_dynamic.get('desc') or {}).get('text', '')
 
-            # 拦截中奖动态
-            ignore_lottery = True  # 默认开启拦截
+            ignore_lottery = True 
             if self.config_getter:
                 val = self.config_getter("settings.ignore_lottery")
                 if val is not None:
@@ -451,47 +440,35 @@ class BiliMonitor:
 
 monitor_instance = BiliMonitor()
 
-# 3. 交互指令
+# ================= 3. 交互指令 =================
 class BiliCommand(BaseCommand):
     command_name = "bili_control"
     command_description = "B站订阅控制"
     command_pattern = r"^/bili_control\s+(?P<action>start|stop|status|test|info)(?:\s+(?P<arg>\S+))?$"
 
-    async def execute(self) -> Tuple[bool, str, bool]:
-        # ID 获取与管理员权限鉴定
-        try:
-            current_user = None
-            if hasattr(self.message, 'sender_id'):
-                current_user = str(self.message.sender_id)
-            elif hasattr(self.message, 'user_id'):
-                current_user = str(self.message.user_id)
-            elif hasattr(self.message, 'uid'):
-                current_user = str(self.message.uid)
-            elif hasattr(self.message, 'message_info'):
-                 info = self.message.message_info
-                 if hasattr(info, 'user_info') and hasattr(info.user_info, 'user_id'):
-                     current_user = str(info.user_info.user_id)
-            
-            if current_user is None:
-                logger.error(f"❌ 无法获取发送者ID，Message对象属性: {dir(self.message)}")
-                return False, "", True
+    # 更新为新版本的返回值签名
+    async def execute(self) -> Tuple[bool, Optional[str], bool]:
+        # 新架构极大地简化了鉴权逻辑，直接读取 self.user_id 即可
+        current_user = getattr(self, 'user_id', None)
+        
+        if not current_user:
+            logger.error("❌ 无法获取发送者ID")
+            return False, "鉴权失败", True
 
-            admin_list = self.get_config("settings.admin_qqs") or []
-            admin_list = [str(x) for x in admin_list]
+        admin_list = self.get_config("settings.admin_qqs") or []
+        admin_list = [str(x) for x in admin_list]
 
-            if current_user not in admin_list:
-                return False, "", True
-
-        except Exception as e:
-            logger.error(f"❌ 鉴权逻辑发生未知错误: {e}")
-            return False, "", True
+        if current_user not in admin_list:
+            return False, "权限不足", True
 
         action = self.matched_groups.get("action")
         arg = self.matched_groups.get("arg")
         def getter(k): return self.get_config(k)
 
+        # 使用新系统内置的 await self.send_text 简化发送流程
         if action == "start":
-            if monitor_instance.running: await self.send_text("⚠️ 已在运行")
+            if monitor_instance.running: 
+                await self.send_text("⚠️ 已在运行")
             else:
                 await monitor_instance.start(getter)
                 await self.send_text("✅ 已启动")
@@ -515,7 +492,6 @@ class BiliCommand(BaseCommand):
                     u = user.User(int(arg), credential=monitor_instance.credential)
                     raw_info = await u.get_live_info()
                     
-                    # 正确解析嵌套数据
                     live_room = raw_info.get('live_room', {})
                     status = live_room.get('liveStatus', 0)
                     uname = raw_info.get('name', '未知')
@@ -538,7 +514,10 @@ class BiliCommand(BaseCommand):
                             f"{duration_text}"
                         )
                         cover = live_room.get('cover', '')
-                        await monitor_instance.push_simple(msg, cover, [self.message.chat_stream.stream_id])
+                        # 使用 self.chat_id 代替原来繁琐的获取流ID的方法
+                        sid = getattr(self, 'chat_id', None)
+                        if sid:
+                            await monitor_instance.push_simple(msg, cover, [sid])
                     else:
                         await self.send_text(f"⚪ 【{uname}】未开播。")
                 except Exception as e:
@@ -547,7 +526,8 @@ class BiliCommand(BaseCommand):
         elif action == "test":
             if not arg:
                 await self.send_text("❌ 用法: /bili_control test <uid>")
-                return False, "", True
+                return False, "参数错误", True
+            
             await self.send_text(f"🧪 测试动态推送 UID {arg}...")
             try:
                 u = user.User(int(arg), credential=monitor_instance.credential)
@@ -557,40 +537,51 @@ class BiliCommand(BaseCommand):
                     await self.send_text("无动态")
                 else:
                     item_to_push = items[0]
-                    sid = None
-                    try: sid = self.message.chat_stream.stream_id
-                    except: pass
+                    # 获取当前聊天 ID
+                    sid = getattr(self, 'chat_id', None) 
                     if sid:
                         await monitor_instance.process_and_push(item_to_push, [sid], 9)
                         await self.send_text("✅ 测试推送已发送")
-            except Exception as e: await self.send_text(f"❌ 错误: {e}")
+                    else:
+                        await self.send_text("❌ 无法获取当前聊天流ID")
+            except Exception as e: 
+                await self.send_text(f"❌ 错误: {e}")
 
-        return True, "done", True
+        return True, f"执行了 {action} 指令", True
 
+# ================= 4. 插件注册 =================
 @register_plugin
 class BiliPlugin(BasePlugin):
+    # 静态信息已经移交 _manifest.json 管理，这里仅作标识
     plugin_name = "bilibili_dynamic_push"
     enable_plugin = True
     dependencies = []
+    # 遵照文档，保留 python_dependencies 以待未来重构
     python_dependencies = ["bilibili_api", "aiohttp"]
+    
     config_file_name = "config.toml"
     config_section_descriptions = {
         "plugin": "插件开关", "settings": "设置", "subscriptions": "订阅"
     }
+    
+    # 按照配置 API 指南，使用 kwargs 定义 ConfigField，并在 plugin 下加上 config_version
     config_schema = {
-        "plugin": {"enabled": ConfigField(bool, True, "启用")},
+        "plugin": {
+            "enabled": ConfigField(type=bool, default=True, description="是否启用"),
+            "config_version": ConfigField(type=str, default="1.0.0", description="配置文件版本")
+        },
         "settings": {
-            "poll_interval": ConfigField(int, 120, "轮询基准秒数"),
-            "poll_jitter": ConfigField(int, 10, "轮询抖动秒数(实际=基准±抖动)"),
-            "admin_qqs": ConfigField(list, [], "管理员QQ列表"),
-            "credential": ConfigField(dict, {}, "Cookie"),
-            "max_images": ConfigField(int, 3, "最大图片数"),
-            "ignore_lottery": ConfigField(bool, True, "自动丢弃开奖动态")
+            "poll_interval": ConfigField(type=int, default=120, description="轮询基准秒数"),
+            "poll_jitter": ConfigField(type=int, default=10, description="轮询抖动秒数(实际=基准±抖动)"),
+            "admin_qqs": ConfigField(type=list, default=[], description="管理员QQ列表"),
+            "credential": ConfigField(type=dict, default={}, description="Cookie"),
+            "max_images": ConfigField(type=int, default=3, description="最大图片数"),
+            "ignore_lottery": ConfigField(type=bool, default=True, description="自动丢弃开奖动态")
         },
         "subscriptions": {
-            "users": ConfigField(list, [
+            "users": ConfigField(type=list, default=[
                 {"uid": "114514", "groups": ["1919810"]}
-            ], "订阅列表")
+            ], description="订阅列表")
         }
     }
 
@@ -599,6 +590,7 @@ class BiliPlugin(BasePlugin):
         asyncio.create_task(self._auto_start())
 
     async def _auto_start(self):
+        # 给系统一定时间完成初始化
         await asyncio.sleep(5)
         if self.get_config("plugin.enabled"):
             def getter(k): return self.get_config(k)
