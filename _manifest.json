@@ -1,37 +1,40 @@
 {
-  "manifest_version": 1,
-  "name": "B站动态推送",
+  "manifest_version": 2,
   "version": "1.6.0",
-  "description": "适用于MaiBot的B站动态订阅插件",
+  "name": "B站动态推送 (Bilibili Dynamic Push Plugin)",
+  "description": "适用于MaiBot的B站动态订阅与直播状态自动推送插件",
   "author": {
     "name": "白狐",
     "url": "https://github.com/whitefox20011120"
   },
   "license": "MIT",
-  "host_application": {
-    "min_version": "1.0.0"
+  "urls": {
+    "repository": "https://github.com/whitefox20011120/bilibili_dynamic_push_plugin",
+    "homepage": "https://github.com/whitefox20011120/bilibili_dynamic_push_plugin",
+    "documentation": "https://github.com/whitefox20011120/bilibili_dynamic_push_plugin#readme",
+    "issues": "https://github.com/whitefox20011120/bilibili_dynamic_push_plugin/issues"
   },
-  "homepage_url": "https://github.com/whitefox20011120/bilibili_dynamic_push_plugin",
-  "repository_url": "https://github.com/whitefox20011120/bilibili_dynamic_push_plugin",
-  "keywords": [
-    "bilibili",
-    "动态订阅",
-    "推送",
-    "监控",
-    "UP主"
+  "host_application": {
+    "min_version": "1.0.0",
+    "max_version": "1.99.99"
+  },
+  "sdk": {
+    "min_version": "2.0.0",
+    "max_version": "2.99.99"
+  },
+  "dependencies": [],
+  "capabilities": [
+    "send.text",
+    "send.image",
+    "config.get",
+    "chat.get_stream"
   ],
-  "categories": [
-    "Utility Tools"
-  ],
-  "plugin_info": {
-    "is_built_in": false,
-    "plugin_type": "general",
-    "components": [
-      {
-        "type": "command",
-        "name": "bili_control",
-        "description": "B站订阅"
-      }
+  "i18n": {
+    "default_locale": "zh-CN",
+    "locales_path": "_locales",
+    "supported_locales": [
+      "zh-CN"
     ]
-  }
+  },
+  "id": "whitefox.bilibili-dynamic-push"
 }
