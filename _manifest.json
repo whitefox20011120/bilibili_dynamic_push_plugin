@@ -10,9 +10,9 @@
   "license": "MIT",
   "urls": {
     "repository": "https://github.com/whitefox20011120/bilibili_dynamic_push_plugin",
-    "homepage": "https://github.com/whitefox20011120/bilibili_dynamic_push_plugin",
-    "documentation": "https://github.com/whitefox20011120/bilibili_dynamic_push_plugin#readme",
-    "issues": "https://github.com/whitefox20011120/bilibili_dynamic_push_plugin/issues"
+    "homepage": "https://github.com/whitefox20011120",
+    "documentation": "https://github.com/whitefox20011120/bilibili_dynamic_push_plugin",
+    "issues": "https://github.com/whitefox20011120/bilibili_dynamic_push_plugin"
   },
   "host_application": {
     "min_version": "1.0.0",
