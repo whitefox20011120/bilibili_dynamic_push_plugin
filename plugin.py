@@ -8,24 +8,44 @@ import random
 import re
 from datetime import datetime
 from urllib.parse import unquote
-from typing import Dict, Any, List, Optional, Tuple, Type
+from typing import Dict, Any, List, Optional, Tuple
 
-from src.common.logger import get_logger
-
-# 引入基础组件
-from src.plugin_system import (
-    BasePlugin,
-    register_plugin,
-    BaseCommand,
-    ComponentInfo,
-    ConfigField,
-)
-from src.plugin_system.apis import send_api, chat_api
+# 严肃引入新版 SDK 核心组件
+from maibot_sdk import MaiBotPlugin, Command, Field, PluginConfigBase, CONFIG_RELOAD_SCOPE_SELF
 from bilibili_api import user, Credential
+import logging
 
-logger = get_logger("bilibili_dynamic_push")
+logger = logging.getLogger("bilibili_dynamic_push")
 
-# ================= 1. 辅助工具类 =================
+# ================= 1. 配置模型 =================
+class PluginSection(PluginConfigBase):
+    __ui_label__ = "插件开关"
+    enabled: bool = Field(default=True, description="是否启用")
+    config_version: str = Field(default="1.0.0", description="配置文件版本")
+
+class SettingsSection(PluginConfigBase):
+    __ui_label__ = "设置"
+    poll_interval: int = Field(default=120, description="轮询基准秒数")
+    poll_jitter: int = Field(default=10, description="轮询抖动秒数(实际=基准±抖动)")
+    admin_qqs: list[str] = Field(default_factory=list, description="管理员QQ列表")
+    credential: dict = Field(default_factory=dict, description="Cookie凭证")
+    max_images: int = Field(default=3, description="最大图片数")
+    ignore_lottery: bool = Field(default=True, description="自动丢弃开奖动态")
+
+class SubscriptionsSection(PluginConfigBase):
+    __ui_label__ = "订阅"
+    users: list[dict] = Field(
+        default_factory=lambda: [{"uid": "114514", "groups": ["1919810"]}], 
+        description="订阅列表"
+    )
+
+class BiliPluginConfig(PluginConfigBase):
+    """插件完整配置模型"""
+    plugin: PluginSection = Field(default_factory=PluginSection)
+    settings: SettingsSection = Field(default_factory=SettingsSection)
+    subscriptions: SubscriptionsSection = Field(default_factory=SubscriptionsSection)
+
+# ================= 2. 辅助工具类 =================
 class BiliUtils:
     @staticmethod
     async def url_to_base64(url: str) -> Optional[str]:
@@ -37,7 +57,7 @@ class BiliUtils:
                         data = await resp.read()
                         return base64.b64encode(data).decode('utf-8')
         except Exception as e:
-            logger.error(f"图片下载失败: {url}, 错误: {e}")
+            self.ctx.logger.error(f"图片下载失败: {url}, 错误: {e}")
             return None
 
     @staticmethod
@@ -70,22 +90,24 @@ class BiliUtils:
         else:
             return f"{m}分{s}秒"
 
-# ================= 2. 核心监控逻辑 =================
+# ================= 3. 核心监控逻辑 =================
 class BiliMonitor:
     def __init__(self):
         self.running = False
         self.history = BiliUtils.load_history()
         self.credential = None
         self._tasks = []
-        self.config_getter = None 
+        self.ctx = None
+        self.config = None 
 
-    async def start(self, config_getter):
+    async def start(self, ctx, config):
         if self.running: return
         self.running = True
-        self.config_getter = config_getter
-        logger.info("启动 Bilibili 监控任务...")
+        self.ctx = ctx
+        self.config = config
+        self.ctx.logger.info("启动 Bilibili 监控任务...")
         
-        cred_dict = config_getter("settings.credential")
+        cred_dict = self.config.settings.credential
         if cred_dict and isinstance(cred_dict, dict):
             valid_cred = {}
             for k, v in cred_dict.items():
@@ -102,11 +124,11 @@ class BiliMonitor:
             if valid_cred:
                 try:
                     self.credential = Credential(**valid_cred)
-                    logger.info("✅ B站凭证加载成功 (已自动解码)")
+                    self.ctx.logger.info("✅ B站凭证加载成功 (已自动解码)")
                 except Exception as e: 
-                    logger.error(f"❌ 凭证加载失败: {e}")
+                    self.ctx.logger.error(f"❌ 凭证加载失败: {e}")
         
-        self._tasks.append(asyncio.create_task(self.loop(config_getter)))
+        self._tasks.append(asyncio.create_task(self.loop()))
         self._tasks.append(asyncio.create_task(self.refresh_credential_loop()))
 
     async def stop(self):
@@ -116,7 +138,7 @@ class BiliMonitor:
             try: await task
             except: pass
         self._tasks = []
-        logger.info("🛑 Bilibili 监控停止")
+        self.ctx.logger.info("🛑 Bilibili 监控停止")
 
     async def refresh_credential_loop(self):
         while self.running:
@@ -125,22 +147,22 @@ class BiliMonitor:
                 try:
                     if await self.credential.check_refresh():
                         await self.credential.refresh()
-                        logger.info("🔄 B站凭据已自动刷新")
+                        self.ctx.logger.info("🔄 B站凭据已自动刷新")
                 except Exception as e:
-                    logger.error(f"凭据刷新失败: {e}")
+                    self.ctx.logger.error(f"凭据刷新失败: {e}")
 
-    async def loop(self, config_getter):
-        logger.info("开始轮询...")
+    async def loop(self):
+        self.ctx.logger.info("开始轮询...")
         while self.running:
             try:
-                if not config_getter("plugin.enabled"):
+                if not self.config.plugin.enabled:
                     await asyncio.sleep(10)
                     continue
 
-                subs = config_getter("subscriptions.users")
-                base_interval = config_getter("settings.poll_interval") or 120
-                jitter = config_getter("settings.poll_jitter") or 0
-                max_imgs = config_getter("settings.max_images") or 3
+                subs = self.config.subscriptions.users
+                base_interval = self.config.settings.poll_interval
+                jitter = self.config.settings.poll_jitter
+                max_imgs = self.config.settings.max_images
 
                 if not subs:
                     await asyncio.sleep(base_interval)
@@ -152,8 +174,6 @@ class BiliMonitor:
                     max_time = base_interval + jitter
                     actual_interval = random.randint(min_time, max_time)
 
-                logger.info(f"🔄 检测中... (下次检测将在 {actual_interval}s 后)")
-
                 uid_to_stream_ids = {}
 
                 for sub in subs:
@@ -163,9 +183,10 @@ class BiliMonitor:
                     current_entry_stream_ids = set()
                     for gid in raw_groups:
                         gid_str = str(gid)
-                        stream_obj = chat_api.get_stream_by_group_id(gid_str, platform="qq")
+                        # 新版异步调用 chat API
+                        stream_obj = await self.ctx.chat.get_stream_by_group_id(gid_str, platform="qq")
                         if stream_obj: 
-                            current_entry_stream_ids.add(stream_obj.stream_id)
+                            current_entry_stream_ids.add(stream_obj.get("session_id", gid_str))
                         else: 
                             current_entry_stream_ids.add(gid_str)
 
@@ -194,7 +215,7 @@ class BiliMonitor:
 
                 await asyncio.sleep(actual_interval)
             except Exception as e:
-                logger.error(f"❌ 轮询错误: {e}")
+                self.ctx.logger.error(f"❌ 轮询错误: {e}")
                 await asyncio.sleep(60)
 
     async def check_dynamic(self, uid: str, stream_ids: List[str], max_imgs: int):
@@ -215,7 +236,7 @@ class BiliMonitor:
                     if int(item['id_str']) > int(latest_id):
                         latest_id = str(item['id_str'])
                 
-                logger.info(f"UID {uid} 首次初始化动态，基准ID: {latest_id}")
+                self.ctx.logger.info(f"UID {uid} 首次初始化动态，基准ID: {latest_id}")
                 user_hist['dyn_id'] = latest_id
                 self.history[uid] = user_hist
                 BiliUtils.save_history(self.history)
@@ -249,7 +270,7 @@ class BiliMonitor:
             latest_item_to_push = new_items[0]
             latest_id_str = str(latest_item_to_push['id_str'])
 
-            logger.info(f"🎉 UID {uid} 发现新动态: {latest_id_str} (推送给 {len(stream_ids)} 个群)")
+            self.ctx.logger.info(f"🎉 UID {uid} 发现新动态: {latest_id_str} (推送给 {len(stream_ids)} 个群)")
             
             await self.process_and_push(latest_item_to_push, stream_ids, max_imgs)
             
@@ -258,7 +279,7 @@ class BiliMonitor:
             BiliUtils.save_history(self.history)
 
         except Exception as e:
-            logger.error(f"UID {uid} 动态检查失败: {e}")
+            self.ctx.logger.error(f"UID {uid} 动态检查失败: {e}")
 
     async def check_live(self, uid: str, stream_ids: List[str]):
         try:
@@ -287,7 +308,7 @@ class BiliMonitor:
                 return
 
             if current_status == 1 and last_status == 0:
-                logger.info(f"UID {uid} 开播")
+                self.ctx.logger.info(f"UID {uid} 开播")
                 current_time = time.time()
                 
                 msg = (
@@ -300,7 +321,7 @@ class BiliMonitor:
                 user_hist['live_start_time'] = current_time
             
             elif current_status == 0 and last_status == 1:
-                logger.info(f"UID {uid} 下播")
+                self.ctx.logger.info(f"UID {uid} 下播")
                 
                 duration_str = "未知"
                 if start_time:
@@ -312,7 +333,8 @@ class BiliMonitor:
                     f"⏱️ 本次直播时长：{duration_str}"
                 )
                 for sid in stream_ids: 
-                    await send_api.text_to_stream(text=msg, stream_id=sid)
+                    # 新版通过 ctx.send
+                    await self.ctx.send.text(msg, sid)
                 
                 user_hist['live_start_time'] = 0
 
@@ -330,16 +352,16 @@ class BiliMonitor:
             b64 = await BiliUtils.url_to_base64(image_url)
         
         for sid in stream_ids:
-            await send_api.text_to_stream(text=text, stream_id=sid)
+            await self.ctx.send.text(text, sid)
             if b64:
-                await send_api.image_to_stream(image_base64=b64, stream_id=sid)
+                await self.ctx.send.image(b64, sid)
 
     async def process_and_push(self, item: Dict, stream_ids: List[str], max_imgs: int):
         parsed = self.parse_dynamic(item)
         if not parsed: return
 
         author = parsed.get('author', 'UP主')
-        text = f"📢 【{author}】发布了新动态！\n\n{parsed['text']}\n🔗 链接: {parsed['url']}"
+        text = f"📢 【{author}】发布了新动态！\n{parsed['text']}\n🔗 链接: {parsed['url']}"
 
         images = parsed['images']
         
@@ -348,13 +370,13 @@ class BiliMonitor:
             images = []
         
         for sid in stream_ids:
-            await send_api.text_to_stream(text=text, stream_id=sid)
+            await self.ctx.send.text(text=text, stream_id=sid)
 
         for img_url in images:
             b64 = await BiliUtils.url_to_base64(img_url)
             if b64:
                 for sid in stream_ids:
-                    await send_api.image_to_stream(image_base64=b64, stream_id=sid)
+                    await self.ctx.send.image(b64, sid)
                     await asyncio.sleep(0.5)
 
     def _extract_major_data(self, module_dynamic: Dict) -> Tuple[str, List[str]]:
@@ -394,16 +416,12 @@ class BiliMonitor:
             main_text, main_images = self._extract_major_data(module_dynamic)
             desc_text = (module_dynamic.get('desc') or {}).get('text', '')
 
-            ignore_lottery = True 
-            if self.config_getter:
-                val = self.config_getter("settings.ignore_lottery")
-                if val is not None:
-                    ignore_lottery = val
+            ignore_lottery = self.config.settings.ignore_lottery if self.config else True
             
             if ignore_lottery:
                 full_text_for_check = f"{desc_text}\n{main_text}"
                 if re.search(r'恭喜@.*?中奖.*?详情请点击.*?查看', full_text_for_check, re.DOTALL):
-                    logger.info(f"🛑 拦截到开奖通知动态 (ID: {id_str})，已丢弃，不进行推送。")
+                    self.ctx.logger.info(f"🛑 拦截到开奖通知动态 (ID: {id_str})，已丢弃，不进行推送。")
                     return None
 
             result = {
@@ -435,60 +453,90 @@ class BiliMonitor:
 
             return result
         except Exception as e:
-            logger.error(f"解析出错: {e}")
+            self.ctx.logger.error(f"解析出错: {e}")
             return None
 
 monitor_instance = BiliMonitor()
 
-# ================= 3. 交互指令 =================
-class BiliCommand(BaseCommand):
-    command_name = "bili_control"
-    command_description = "B站订阅控制"
-    command_pattern = r"^/bili_control\s+(?P<action>start|stop|status|test|info)(?:\s+(?P<arg>\S+))?$"
+# ================= 4. 插件注册入口 =================
+class BiliPlugin(MaiBotPlugin):
+    # 绑定强类型配置模型
+    config_model = BiliPluginConfig
 
-    # 更新为新版本的返回值签名
-    async def execute(self) -> Tuple[bool, Optional[str], bool]:
-        # 新架构极大地简化了鉴权逻辑，直接读取 self.user_id 即可
-        current_user = getattr(self, 'user_id', None)
+    async def on_load(self) -> None:
+        """插件加载时的生命周期钩子"""
+        # 给系统一定时间完成初始化
+        asyncio.create_task(self._auto_start())
+
+    async def _auto_start(self):
+        await asyncio.sleep(5)
+        # 读取强类型配置 self.config
+        if self.config.plugin.enabled:
+            # 传递上下文能力(self.ctx)和配置(self.config)给监控器
+            await monitor_instance.start(self.ctx, self.config)
+
+    async def on_unload(self) -> None:
+        """插件卸载时的清理工作"""
+        await monitor_instance.stop()
+
+    async def on_config_update(self, scope: str, config_data: dict[str, object], version: str) -> None:
+        """支持配置热重载"""
+        if scope == CONFIG_RELOAD_SCOPE_SELF:
+            self.ctx.logger.info(f"B站监控配置已热重载更新: {version}") # 已经去掉了多余的 self.ctx.
+            # 更新监控器的配置实例
+            monitor_instance.config = self.config
+
+    # 使用 @Command 装饰器声明指令，直接挂载在插件类下
+    @Command(
+        "bili_control",
+        description="B站订阅控制",
+        # 允许末尾带有任意数量的空格，增强指令容错率
+        pattern=r"^/bili_control\s+(?P<action>start|stop|status|test|info)(?:\s+(?P<arg>.*))?\s*$"
+    )
+    async def handle_bili_control(self, stream_id: str = "", matched_groups: dict = None, **kwargs) -> tuple:
+        # 安全获取 user_id
+        current_user = kwargs.get("user_id") or kwargs.get("message_base_info", {}).get("user_info", {}).get("user_id")
         
         if not current_user:
-            logger.error("❌ 无法获取发送者ID")
+            self.ctx.logger.error("❌ 无法获取发送者ID")
             return False, "鉴权失败", True
 
-        admin_list = self.get_config("settings.admin_qqs") or []
-        admin_list = [str(x) for x in admin_list]
+        admin_list = [str(x) for x in self.config.settings.admin_qqs]
 
         if current_user not in admin_list:
+            self.ctx.logger.warning(f"⚠️ 非管理员尝试执行指令: {current_user}")
             return False, "权限不足", True
 
-        action = self.matched_groups.get("action")
-        arg = self.matched_groups.get("arg")
-        def getter(k): return self.get_config(k)
+        action = matched_groups.get("action") if matched_groups else None
+        arg = matched_groups.get("arg") if matched_groups else None
+        
+        # 去除参数两边多余的空格，防止复制 UID 时带入不可见字符
+        if arg:
+            arg = arg.strip()
 
-        # 使用新系统内置的 await self.send_text 简化发送流程
         if action == "start":
             if monitor_instance.running: 
-                await self.send_text("⚠️ 已在运行")
+                self.ctx.logger.info("⚠️ 启动指令被忽略：B站监控已在运行")
             else:
-                await monitor_instance.start(getter)
-                await self.send_text("✅ 已启动")
+                await monitor_instance.start(self.ctx, self.config)
+                self.ctx.logger.info("✅ 监控已通过指令启动")
         
         elif action == "stop":
             await monitor_instance.stop()
-            await self.send_text("🛑 已停止")
+            self.ctx.logger.info("🛑 监控已通过指令停止")
         
         elif action == "status":
             st = "🟢" if monitor_instance.running else "🔴"
-            subs = self.get_config("subscriptions.users") or []
-            cnt = len(subs)
-            await self.send_text(f"📊 状态:{st} | 订阅数:{cnt}")
+            subs = self.config.subscriptions.users
+            cnt = len(subs) if subs else 0
+            self.ctx.logger.info(f"📊 当前状态:{st} | 订阅数:{cnt}")
 
         elif action == "info":
             if not arg:
-                await self.send_text("❌ 用法: /bili_control info <uid>")
+                self.ctx.logger.error("❌ 用法错误: /bili_control info <uid>")
             else:
                 try:
-                    await self.send_text(f"🔍 正在查询 UID {arg} ...")
+                    self.ctx.logger.info(f"🔍 正在查询 UID {arg} ...")
                     u = user.User(int(arg), credential=monitor_instance.credential)
                     raw_info = await u.get_live_info()
                     
@@ -514,89 +562,37 @@ class BiliCommand(BaseCommand):
                             f"{duration_text}"
                         )
                         cover = live_room.get('cover', '')
-                        # 使用 self.chat_id 代替原来繁琐的获取流ID的方法
-                        sid = getattr(self, 'chat_id', None)
-                        if sid:
-                            await monitor_instance.push_simple(msg, cover, [sid])
+                        # 👇 只有这行会真正把内容发到群里
+                        await monitor_instance.push_simple(msg, cover, [stream_id])
+                        self.ctx.logger.info(f"✅ UID {arg} 的直播状态已成功推送到群聊")
                     else:
-                        await self.send_text(f"⚪ 【{uname}】未开播。")
+                        self.ctx.logger.info(f"⚪ 状态查询结果：【{uname}】未开播。")
                 except Exception as e:
-                    await self.send_text(f"❌ 查询失败: {e}")
+                    self.ctx.logger.error(f"❌ 查询失败: {e}")
 
         elif action == "test":
             if not arg:
-                await self.send_text("❌ 用法: /bili_control test <uid>")
+                self.ctx.logger.error("❌ 用法错误: /bili_control test <uid>")
                 return False, "参数错误", True
             
-            await self.send_text(f"🧪 测试动态推送 UID {arg}...")
+            self.ctx.logger.info(f"🧪 开始测试动态推送 UID {arg}...")
             try:
                 u = user.User(int(arg), credential=monitor_instance.credential)
                 dyn = await u.get_dynamics_new()
                 items = dyn.get('items', [])
                 if not items: 
-                    await self.send_text("无动态")
+                    self.ctx.logger.info("⚠️ 该 UID 暂无动态")
                 else:
                     item_to_push = items[0]
-                    # 获取当前聊天 ID
-                    sid = getattr(self, 'chat_id', None) 
-                    if sid:
-                        await monitor_instance.process_and_push(item_to_push, [sid], 9)
-                        await self.send_text("✅ 测试推送已发送")
-                    else:
-                        await self.send_text("❌ 无法获取当前聊天流ID")
+                    # 👇 只有这行会真正把内容发到群里
+                    await monitor_instance.process_and_push(item_to_push, [stream_id], 9)
+                    self.ctx.logger.info("✅ 测试推送已成功发送到群聊")
             except Exception as e: 
-                await self.send_text(f"❌ 错误: {e}")
+                self.ctx.logger.error(f"❌ 推送错误: {e}")
 
-        return True, f"执行了 {action} 指令", True
+        return True, f"后台静默执行了 {action} 指令", True
 
-# ================= 4. 插件注册 =================
-@register_plugin
-class BiliPlugin(BasePlugin):
-    # 静态信息已经移交 _manifest.json 管理，这里仅作标识
-    plugin_name = "bilibili_dynamic_push"
-    enable_plugin = True
-    dependencies = []
-    # 遵照文档，保留 python_dependencies 以待未来重构
-    python_dependencies = ["bilibili_api", "aiohttp"]
-    
-    config_file_name = "config.toml"
-    config_section_descriptions = {
-        "plugin": "插件开关", "settings": "设置", "subscriptions": "订阅"
-    }
-    
-    # 按照配置 API 指南，使用 kwargs 定义 ConfigField，并在 plugin 下加上 config_version
-    config_schema = {
-        "plugin": {
-            "enabled": ConfigField(type=bool, default=True, description="是否启用"),
-            "config_version": ConfigField(type=str, default="1.0.0", description="配置文件版本")
-        },
-        "settings": {
-            "poll_interval": ConfigField(type=int, default=120, description="轮询基准秒数"),
-            "poll_jitter": ConfigField(type=int, default=10, description="轮询抖动秒数(实际=基准±抖动)"),
-            "admin_qqs": ConfigField(type=list, default=[], description="管理员QQ列表"),
-            "credential": ConfigField(type=dict, default={}, description="Cookie"),
-            "max_images": ConfigField(type=int, default=3, description="最大图片数"),
-            "ignore_lottery": ConfigField(type=bool, default=True, description="自动丢弃开奖动态")
-        },
-        "subscriptions": {
-            "users": ConfigField(type=list, default=[
-                {"uid": "114514", "groups": ["1919810"]}
-            ], description="订阅列表")
-        }
-    }
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        asyncio.create_task(self._auto_start())
-
-    async def _auto_start(self):
-        # 给系统一定时间完成初始化
-        await asyncio.sleep(5)
-        if self.get_config("plugin.enabled"):
-            def getter(k): return self.get_config(k)
-            await monitor_instance.start(getter)
-
-    def get_plugin_components(self) -> List[Tuple[ComponentInfo, Type]]:
-        return [
-            (BiliCommand.get_command_info(), BiliCommand)
-        ]
+# ================= 5. 工厂函数入口 =================
+def create_plugin():
+    """必须提供这个工厂函数替代旧的 @register_plugin"""
+    return BiliPlugin()
