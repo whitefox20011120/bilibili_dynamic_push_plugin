@@ -6,6 +6,7 @@ import os
 import time
 import random
 import re
+import hashlib
 from datetime import datetime
 from urllib.parse import unquote
 from typing import Dict, Any, List, Optional, Tuple
@@ -16,7 +17,7 @@ import logging
 
 logger = logging.getLogger("bilibili_dynamic_push")
 
-# ================= 1. 配置模型 =================
+# 1. 配置模型
 class PluginSection(PluginConfigBase):
     __ui_label__ = "插件开关"
     enabled: bool = Field(default=True, description="是否启用")
@@ -43,8 +44,13 @@ class BiliPluginConfig(PluginConfigBase):
     settings: SettingsSection = Field(default_factory=SettingsSection)
     subscriptions: SubscriptionsSection = Field(default_factory=SubscriptionsSection)
 
-# ================= 2. 辅助工具类 =================
+# 2. 辅助工具类
 class BiliUtils:
+    @staticmethod
+    def calculate_session_id(platform: str, group_id: str) -> str:
+        components = [platform, group_id]
+        return hashlib.md5("_".join(components).encode()).hexdigest()
+
     @staticmethod
     async def url_to_base64(url: str) -> Optional[str]:
         if not url: return None
@@ -88,7 +94,7 @@ class BiliUtils:
         else:
             return f"{m}分{s}秒"
 
-# ================= 3. 核心监控逻辑 =================
+# 3. 核心监控逻辑
 class BiliMonitor:
     def __init__(self):
         self.running = False
@@ -103,7 +109,7 @@ class BiliMonitor:
         self.running = True
         self.ctx = ctx
         self.config = config
-        self.ctx.logger.info("启动 Bilibili 监控任务...")
+        self.ctx.logger.info("🟢 启动 Bilibili 监控任务...")
         
         cred_dict = self.config.settings.credential
         if cred_dict and isinstance(cred_dict, dict):
@@ -150,7 +156,6 @@ class BiliMonitor:
                     self.ctx.logger.error(f"凭据刷新失败: {e}")
 
     async def loop(self):
-        self.ctx.logger.info("开始轮询...")
         while self.running:
             try:
                 if not self.config.plugin.enabled:
@@ -180,11 +185,9 @@ class BiliMonitor:
                     
                     current_entry_stream_ids = set()
                     for gid in raw_groups:
-                        gid_str = str(gid)
-                        stream_obj = await self.ctx.chat.get_stream_by_group_id(gid_str, platform="qq")
-                        
-                        if stream_obj and stream_obj.get("session_id"): 
-                            current_entry_stream_ids.add(stream_obj.get("session_id"))
+                        # 使用原生 MD5 算法生成 Stream ID
+                        session_id = BiliUtils.calculate_session_id("qq", str(gid))
+                        current_entry_stream_ids.add(session_id)
 
                     target_uids = []
                     if "uid" in sub and sub["uid"]: 
@@ -198,31 +201,40 @@ class BiliMonitor:
                             uid_to_stream_ids[uid] = set()
                         uid_to_stream_ids[uid].update(current_entry_stream_ids)
 
+                found_new_things = False
                 for uid, stream_ids_set in uid_to_stream_ids.items():
                     target_stream_ids = list(stream_ids_set)
-                    await self.check_dynamic(uid, target_stream_ids, max_imgs)
-                    await self.check_live(uid, target_stream_ids)
+                    
+                    pushed_dyn = await self.check_dynamic(uid, target_stream_ids, max_imgs)
+                    pushed_live = await self.check_live(uid, target_stream_ids)
+                    
+                    if pushed_dyn or pushed_live:
+                        found_new_things = True
                     
                     await asyncio.sleep(1)
 
+                if found_new_things:
+                    self.ctx.logger.info(f"✅ 本轮轮询完成：发现新动态/直播事件！等待 {actual_interval} 秒后进行下一轮。")
+                else:
+                    self.ctx.logger.info(f"💤 本轮轮询完成：未发现新动态。等待 {actual_interval} 秒后进行下一轮。")
+                    
                 await asyncio.sleep(actual_interval)
             except Exception as e:
                 self.ctx.logger.error(f"❌ 轮询错误: {e}")
                 await asyncio.sleep(60)
 
-    async def check_dynamic(self, uid: str, stream_ids: List[str], max_imgs: int):
+    async def check_dynamic(self, uid: str, stream_ids: List[str], max_imgs: int) -> bool:
         try:
             u = user.User(int(uid), credential=self.credential)
             dynamics = await u.get_dynamics_new()
             items = dynamics.get('items', [])
-            if not items: return
+            if not items: return False
 
             user_hist = self.history.get(uid, {})
             if isinstance(user_hist, str): user_hist = {'dyn_id': user_hist}
             
             last_saved_id = user_hist.get('dyn_id')
             
-            # 这里就是生成 history.json 的关键点
             if not last_saved_id:
                 latest_id = str(items[0]['id_str']) 
                 for item in items:
@@ -233,7 +245,7 @@ class BiliMonitor:
                 user_hist['dyn_id'] = latest_id
                 self.history[uid] = user_hist
                 BiliUtils.save_history(self.history)
-                return
+                return False
 
             new_items = []
             for item in items:
@@ -258,25 +270,25 @@ class BiliMonitor:
                 else:
                     if not is_top: break
             
-            if not new_items: return
+            if not new_items: return False
 
             latest_item_to_push = new_items[0]
             latest_id_str = str(latest_item_to_push['id_str'])
 
-            if stream_ids:
-                self.ctx.logger.info(f"🎉 UID {uid} 发现新动态: {latest_id_str} (准备推送给 {len(stream_ids)} 个群)")
-                await self.process_and_push(latest_item_to_push, stream_ids, max_imgs)
-            else:
-                self.ctx.logger.info(f"🎉 UID {uid} 发现新动态: {latest_id_str}，但群聊流暂未激活，仅静默更新记录。")
+            self.ctx.logger.info(f"🎉 UID {uid} 发现新动态: {latest_id_str} (准备推送到 {len(stream_ids)} 个流节点)")
+            await self.process_and_push(latest_item_to_push, stream_ids, max_imgs)
             
             user_hist['dyn_id'] = latest_id_str
             self.history[uid] = user_hist
             BiliUtils.save_history(self.history)
+            
+            return True
 
         except Exception as e:
             self.ctx.logger.error(f"UID {uid} 动态检查失败: {e}")
+            return False
 
-    async def check_live(self, uid: str, stream_ids: List[str]):
+    async def check_live(self, uid: str, stream_ids: List[str]) -> bool:
         try:
             u = user.User(int(uid), credential=self.credential)
             raw_info = await u.get_live_info()
@@ -300,47 +312,52 @@ class BiliMonitor:
                     user_hist['live_start_time'] = time.time()
                 self.history[uid] = user_hist
                 BiliUtils.save_history(self.history)
-                return
+                return False
 
+            has_event = False
             if current_status == 1 and last_status == 0:
                 self.ctx.logger.info(f"UID {uid} 开播")
                 current_time = time.time()
                 
-                if stream_ids:
-                    msg = (
-                        f"🔴 【{uname}】开播了！\n"
-                        f"📺 标题：{room_title}\n"
-                        f"🔗 传送门：{url}\n"
-                        f"⏰ 时间：{datetime.now().strftime('%H:%M:%S')}"
-                    )
-                    await self.push_simple(msg, cover, stream_ids)
+                msg = (
+                    f"🔴 【{uname}】开播了！\n"
+                    f"📺 标题：{room_title}\n"
+                    f"🔗 传送门：{url}\n"
+                    f"⏰ 时间：{datetime.now().strftime('%H:%M:%S')}"
+                )
+                await self.push_simple(msg, cover, stream_ids)
                 user_hist['live_start_time'] = current_time
+                has_event = True
             
             elif current_status == 0 and last_status == 1:
                 self.ctx.logger.info(f"UID {uid} 下播")
                 
-                if stream_ids:
-                    duration_str = "未知"
-                    if start_time:
-                        duration_sec = time.time() - start_time
-                        duration_str = BiliUtils.format_duration(duration_sec)
-                    
-                    msg = (
-                        f"🏁 【{uname}】下播了~\n"
-                        f"⏱️ 本次直播时长：{duration_str}"
-                    )
-                    for sid in stream_ids: 
+                duration_str = "未知"
+                if start_time:
+                    duration_sec = time.time() - start_time
+                    duration_str = BiliUtils.format_duration(duration_sec)
+                
+                msg = (
+                    f"🏁 【{uname}】下播了~\n"
+                    f"⏱️ 本次直播时长：{duration_str}"
+                )
+                for sid in stream_ids: 
+                    try:
                         await self.ctx.send.text(msg, sid)
+                    except: pass
                 
                 user_hist['live_start_time'] = 0
+                has_event = True
 
             if current_status != last_status:
                 user_hist['live_status'] = current_status
                 self.history[uid] = user_hist
                 BiliUtils.save_history(self.history)
 
+            return has_event
+
         except Exception as e:
-            pass
+            return False
 
     async def push_simple(self, text: str, image_url: str, stream_ids: List[str]):
         b64 = None
@@ -348,32 +365,39 @@ class BiliMonitor:
             b64 = await BiliUtils.url_to_base64(image_url)
         
         for sid in stream_ids:
-            await self.ctx.send.text(text, sid)
-            if b64:
-                await self.ctx.send.image(b64, sid)
+            try:
+                await self.ctx.send.text(text, sid)
+                if b64:
+                    await self.ctx.send.image(b64, sid)
+            except Exception:
+                pass 
 
     async def process_and_push(self, item: Dict, stream_ids: List[str], max_imgs: int):
         parsed = self.parse_dynamic(item)
         if not parsed: return
 
         author = parsed.get('author', 'UP主')
-        text = f"📢 【{author}】发布了新动态！\n{parsed['text']}\n🔗 链接: {parsed['url']}"
+        text = f"📢 【{author}】发布了新动态！{parsed['text']}\n🔗 链接: {parsed['url']}"
 
         images = parsed['images']
         
         if len(images) > max_imgs:
-            text += f"\n\n⚠️ 动态图片过多，共【{len(images)}】张，请点击链接去原动态查看图片。"
+            text += f"\n⚠️ 动态图片过多，共【{len(images)}】张，请点击链接去原动态查看图片。"
             images = []
         
         for sid in stream_ids:
-            await self.ctx.send.text(text=text, stream_id=sid)
+            try:
+                await self.ctx.send.text(text=text, stream_id=sid)
+            except: pass
 
         for img_url in images:
             b64 = await BiliUtils.url_to_base64(img_url)
             if b64:
                 for sid in stream_ids:
-                    await self.ctx.send.image(b64, sid)
-                    await asyncio.sleep(0.5)
+                    try:
+                        await self.ctx.send.image(b64, sid)
+                        await asyncio.sleep(0.5)
+                    except: pass
 
     def _extract_major_data(self, module_dynamic: Dict) -> Tuple[str, List[str]]:
         text = ""
@@ -454,7 +478,7 @@ class BiliMonitor:
 
 monitor_instance = BiliMonitor()
 
-# ================= 4. 插件注册入口 =================
+# 4. 插件注册入口
 class BiliPlugin(MaiBotPlugin):
     config_model = BiliPluginConfig
 
@@ -574,6 +598,6 @@ class BiliPlugin(MaiBotPlugin):
 
         return True, f"后台静默执行了 {action} 指令", True
 
-# ================= 5. 工厂函数入口 =================
+# 5. 工厂函数入口
 def create_plugin():
     return BiliPlugin()
