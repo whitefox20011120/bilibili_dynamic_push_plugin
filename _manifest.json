@@ -27,6 +27,7 @@
     "send.text",
     "send.image",
     "config.get",
+    "chat.get_group_streams",
     "chat.get_stream_by_group_id"
   ],
   "i18n": {
