@@ -10,7 +10,6 @@ from datetime import datetime
 from urllib.parse import unquote
 from typing import Dict, Any, List, Optional, Tuple
 
-# 严肃引入新版 SDK 核心组件
 from maibot_sdk import MaiBotPlugin, Command, Field, PluginConfigBase, CONFIG_RELOAD_SCOPE_SELF
 from bilibili_api import user, Credential
 import logging
@@ -40,7 +39,6 @@ class SubscriptionsSection(PluginConfigBase):
     )
 
 class BiliPluginConfig(PluginConfigBase):
-    """插件完整配置模型"""
     plugin: PluginSection = Field(default_factory=PluginSection)
     settings: SettingsSection = Field(default_factory=SettingsSection)
     subscriptions: SubscriptionsSection = Field(default_factory=SubscriptionsSection)
@@ -57,7 +55,7 @@ class BiliUtils:
                         data = await resp.read()
                         return base64.b64encode(data).decode('utf-8')
         except Exception as e:
-            self.ctx.logger.error(f"图片下载失败: {url}, 错误: {e}")
+            logger.error(f"图片下载失败: {url}, 错误: {e}")
             return None
 
     @staticmethod
@@ -183,14 +181,10 @@ class BiliMonitor:
                     current_entry_stream_ids = set()
                     for gid in raw_groups:
                         gid_str = str(gid)
-                        # 新版异步调用 chat API
                         stream_obj = await self.ctx.chat.get_stream_by_group_id(gid_str, platform="qq")
-                        if stream_obj: 
-                            current_entry_stream_ids.add(stream_obj.get("session_id", gid_str))
-                        else: 
-                            current_entry_stream_ids.add(gid_str)
-
-                    if not current_entry_stream_ids: continue
+                        
+                        if stream_obj and stream_obj.get("session_id"): 
+                            current_entry_stream_ids.add(stream_obj.get("session_id"))
 
                     target_uids = []
                     if "uid" in sub and sub["uid"]: 
@@ -206,8 +200,6 @@ class BiliMonitor:
 
                 for uid, stream_ids_set in uid_to_stream_ids.items():
                     target_stream_ids = list(stream_ids_set)
-                    if not target_stream_ids: continue
-                    
                     await self.check_dynamic(uid, target_stream_ids, max_imgs)
                     await self.check_live(uid, target_stream_ids)
                     
@@ -230,6 +222,7 @@ class BiliMonitor:
             
             last_saved_id = user_hist.get('dyn_id')
             
+            # 这里就是生成 history.json 的关键点
             if not last_saved_id:
                 latest_id = str(items[0]['id_str']) 
                 for item in items:
@@ -270,9 +263,11 @@ class BiliMonitor:
             latest_item_to_push = new_items[0]
             latest_id_str = str(latest_item_to_push['id_str'])
 
-            self.ctx.logger.info(f"🎉 UID {uid} 发现新动态: {latest_id_str} (推送给 {len(stream_ids)} 个群)")
-            
-            await self.process_and_push(latest_item_to_push, stream_ids, max_imgs)
+            if stream_ids:
+                self.ctx.logger.info(f"🎉 UID {uid} 发现新动态: {latest_id_str} (准备推送给 {len(stream_ids)} 个群)")
+                await self.process_and_push(latest_item_to_push, stream_ids, max_imgs)
+            else:
+                self.ctx.logger.info(f"🎉 UID {uid} 发现新动态: {latest_id_str}，但群聊流暂未激活，仅静默更新记录。")
             
             user_hist['dyn_id'] = latest_id_str
             self.history[uid] = user_hist
@@ -311,30 +306,31 @@ class BiliMonitor:
                 self.ctx.logger.info(f"UID {uid} 开播")
                 current_time = time.time()
                 
-                msg = (
-                    f"🔴 【{uname}】开播了！\n"
-                    f"📺 标题：{room_title}\n"
-                    f"🔗 传送门：{url}\n"
-                    f"⏰ 时间：{datetime.now().strftime('%H:%M:%S')}"
-                )
-                await self.push_simple(msg, cover, stream_ids)
+                if stream_ids:
+                    msg = (
+                        f"🔴 【{uname}】开播了！\n"
+                        f"📺 标题：{room_title}\n"
+                        f"🔗 传送门：{url}\n"
+                        f"⏰ 时间：{datetime.now().strftime('%H:%M:%S')}"
+                    )
+                    await self.push_simple(msg, cover, stream_ids)
                 user_hist['live_start_time'] = current_time
             
             elif current_status == 0 and last_status == 1:
                 self.ctx.logger.info(f"UID {uid} 下播")
                 
-                duration_str = "未知"
-                if start_time:
-                    duration_sec = time.time() - start_time
-                    duration_str = BiliUtils.format_duration(duration_sec)
-                
-                msg = (
-                    f"🏁 【{uname}】下播了~\n"
-                    f"⏱️ 本次直播时长：{duration_str}"
-                )
-                for sid in stream_ids: 
-                    # 新版通过 ctx.send
-                    await self.ctx.send.text(msg, sid)
+                if stream_ids:
+                    duration_str = "未知"
+                    if start_time:
+                        duration_sec = time.time() - start_time
+                        duration_str = BiliUtils.format_duration(duration_sec)
+                    
+                    msg = (
+                        f"🏁 【{uname}】下播了~\n"
+                        f"⏱️ 本次直播时长：{duration_str}"
+                    )
+                    for sid in stream_ids: 
+                        await self.ctx.send.text(msg, sid)
                 
                 user_hist['live_start_time'] = 0
 
@@ -460,41 +456,30 @@ monitor_instance = BiliMonitor()
 
 # ================= 4. 插件注册入口 =================
 class BiliPlugin(MaiBotPlugin):
-    # 绑定强类型配置模型
     config_model = BiliPluginConfig
 
     async def on_load(self) -> None:
-        """插件加载时的生命周期钩子"""
-        # 给系统一定时间完成初始化
         asyncio.create_task(self._auto_start())
 
     async def _auto_start(self):
         await asyncio.sleep(5)
-        # 读取强类型配置 self.config
         if self.config.plugin.enabled:
-            # 传递上下文能力(self.ctx)和配置(self.config)给监控器
             await monitor_instance.start(self.ctx, self.config)
 
     async def on_unload(self) -> None:
-        """插件卸载时的清理工作"""
         await monitor_instance.stop()
 
     async def on_config_update(self, scope: str, config_data: dict[str, object], version: str) -> None:
-        """支持配置热重载"""
         if scope == CONFIG_RELOAD_SCOPE_SELF:
-            self.ctx.logger.info(f"B站监控配置已热重载更新: {version}") # 已经去掉了多余的 self.ctx.
-            # 更新监控器的配置实例
+            self.ctx.logger.info(f"B站监控配置已热重载更新: {version}")
             monitor_instance.config = self.config
 
-    # 使用 @Command 装饰器声明指令，直接挂载在插件类下
     @Command(
         "bili_control",
         description="B站订阅控制",
-        # 允许末尾带有任意数量的空格，增强指令容错率
         pattern=r"^/bili_control\s+(?P<action>start|stop|status|test|info)(?:\s+(?P<arg>.*))?\s*$"
     )
     async def handle_bili_control(self, stream_id: str = "", matched_groups: dict = None, **kwargs) -> tuple:
-        # 安全获取 user_id
         current_user = kwargs.get("user_id") or kwargs.get("message_base_info", {}).get("user_info", {}).get("user_id")
         
         if not current_user:
@@ -510,7 +495,6 @@ class BiliPlugin(MaiBotPlugin):
         action = matched_groups.get("action") if matched_groups else None
         arg = matched_groups.get("arg") if matched_groups else None
         
-        # 去除参数两边多余的空格，防止复制 UID 时带入不可见字符
         if arg:
             arg = arg.strip()
 
@@ -562,7 +546,6 @@ class BiliPlugin(MaiBotPlugin):
                             f"{duration_text}"
                         )
                         cover = live_room.get('cover', '')
-                        # 👇 只有这行会真正把内容发到群里
                         await monitor_instance.push_simple(msg, cover, [stream_id])
                         self.ctx.logger.info(f"✅ UID {arg} 的直播状态已成功推送到群聊")
                     else:
@@ -584,7 +567,6 @@ class BiliPlugin(MaiBotPlugin):
                     self.ctx.logger.info("⚠️ 该 UID 暂无动态")
                 else:
                     item_to_push = items[0]
-                    # 👇 只有这行会真正把内容发到群里
                     await monitor_instance.process_and_push(item_to_push, [stream_id], 9)
                     self.ctx.logger.info("✅ 测试推送已成功发送到群聊")
             except Exception as e: 
@@ -594,5 +576,4 @@ class BiliPlugin(MaiBotPlugin):
 
 # ================= 5. 工厂函数入口 =================
 def create_plugin():
-    """必须提供这个工厂函数替代旧的 @register_plugin"""
     return BiliPlugin()
