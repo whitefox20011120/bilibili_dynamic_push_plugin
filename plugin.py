@@ -17,7 +17,7 @@ import logging
 
 logger = logging.getLogger("bilibili_dynamic_push")
 
-# ================= 1. 配置模型 =================
+# 1. 配置模型
 class PluginSection(PluginConfigBase):
     __ui_label__ = "插件开关"
     enabled: bool = Field(default=True, description="是否启用")
@@ -44,14 +44,10 @@ class BiliPluginConfig(PluginConfigBase):
     settings: SettingsSection = Field(default_factory=SettingsSection)
     subscriptions: SubscriptionsSection = Field(default_factory=SubscriptionsSection)
 
-# ================= 2. 辅助工具类 =================
+# 2. 辅助工具类
 class BiliUtils:
     @staticmethod
     def calculate_session_id(platform: str, group_id: str) -> str:
-        """
-        终极解法：直接通过平台和群号计算出 Stream ID 的 MD5 值。
-        绕过所有不稳定的高层缓存，直达底层 Platform IO！
-        """
         components = [platform, group_id]
         return hashlib.md5("_".join(components).encode()).hexdigest()
 
@@ -102,7 +98,7 @@ class BiliUtils:
         else:
             return f"{m}分{s}秒"
 
-# ================= 3. 核心监控逻辑 =================
+# 3. 核心监控逻辑
 class BiliMonitor:
     def __init__(self):
         self.running = False
@@ -393,10 +389,10 @@ class BiliMonitor:
         author = parsed.get('author', 'UP主')
         text = f"📢 【{author}】发布了新动态！\n{parsed['text']}\n🔗 链接: {parsed['url']}"
 
-        # 这里的 images 依然建议做一个上限截断（比如最多 9 或 18 张），防止无限下载
+        # 这里的images做一个上限截断（比如最多9张），防止无限下载
         images = parsed['images'][:9] 
         
-        # 1. 提前缓存所有图片，下载为 base64
+        # 1.提前缓存所有图片，下载为base64
         cached_b64s = []
         for img_url in images:
             b64 = await BiliUtils.url_to_base64(img_url)
@@ -405,7 +401,7 @@ class BiliMonitor:
         
         num_imgs = len(cached_b64s)
 
-        # 2. 根据缓存下来的图片数量做判断
+        # 2.根据缓存下来的图片数量做判断
         if num_imgs > max_imgs:
             
             # 准备图片转发节点 (不含文字)
@@ -433,7 +429,7 @@ class BiliMonitor:
                             "message": [{"type": "text", "data": {"text": text}}]
                         }
                     )
-                    # 紧接着发图片合并包
+                    # 接着发图片合并包
                     await self.ctx.api.call(
                         "adapter.napcat.message.send_group_forward_msg",
                         params={
@@ -445,7 +441,7 @@ class BiliMonitor:
                 except Exception as e:
                     self.ctx.logger.error(f"发送合并转发(仅图片)失败: {e}")
         else:
-            # === 未达到阔值：图文封装在一个气泡中发送 ===
+            # 未达到阔值：图文封装在一个气泡中发送
             message_chain = [{"type": "text", "data": {"text": text + "\n"}}]
             for b64 in cached_b64s:
                 message_chain.append({"type": "image", "data": {"file": f"base64://{b64}"}})
@@ -543,7 +539,7 @@ class BiliMonitor:
 
 monitor_instance = BiliMonitor()
 
-# ================= 4. 插件注册入口 =================
+# 4. 插件注册入口
 class BiliPlugin(MaiBotPlugin):
     config_model = BiliPluginConfig
 
@@ -684,6 +680,6 @@ class BiliPlugin(MaiBotPlugin):
 
         return True, f"后台静默执行了 {action} 指令", True
 
-# ================= 5. 工厂函数入口 =================
+# 5. 工厂函数入口
 def create_plugin():
     return BiliPlugin()
