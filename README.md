@@ -40,6 +40,7 @@ poll_jitter = 10       # 随机抖动时间（秒）。
 
 max_images = 3         # 单条推送最大图片数，超过此数量则图片打包，合并转发到群聊中。
 
+#建议生成config后将以下内容（模板）粘过去替换，按一下格式填写配置信息。
 [settings.credential]
 # B站凭证（可选，建议配置以提高访问稳定性或查看受限内容）
 # 获取方式：浏览器登录B站 -> F12 -> Application（应用） -> Cookies（左边那一堆），去 https://www.bilibili.com 那里
