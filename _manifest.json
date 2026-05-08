@@ -24,12 +24,7 @@
   },
   "dependencies": [],
   "capabilities": [
-    "send.text",
-    "send.image",
     "config.get",
-    "send.forward",   
-    "chat.get_group_streams",
-    "chat.get_stream_by_group_id",
     "api.call"
   ],
   "i18n": {
