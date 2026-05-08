@@ -17,7 +17,7 @@ import logging
 
 logger = logging.getLogger("bilibili_dynamic_push")
 
-# 1. 配置模型
+# ================= 1. 配置模型 =================
 class PluginSection(PluginConfigBase):
     __ui_label__ = "插件开关"
     enabled: bool = Field(default=True, description="是否启用")
@@ -44,16 +44,24 @@ class BiliPluginConfig(PluginConfigBase):
     settings: SettingsSection = Field(default_factory=SettingsSection)
     subscriptions: SubscriptionsSection = Field(default_factory=SubscriptionsSection)
 
-# 2. 辅助工具类
+# ================= 2. 辅助工具类 =================
 class BiliUtils:
     @staticmethod
     def calculate_session_id(platform: str, group_id: str) -> str:
+        """
+        终极解法：直接通过平台和群号计算出 Stream ID 的 MD5 值。
+        绕过所有不稳定的高层缓存，直达底层 Platform IO！
+        """
         components = [platform, group_id]
         return hashlib.md5("_".join(components).encode()).hexdigest()
 
     @staticmethod
     async def url_to_base64(url: str) -> Optional[str]:
         if not url: return None
+        
+        if "hdslb.com" in url and "@" not in url and not url.lower().endswith(".gif"):
+            url = f"{url}@1080w_1e_1c.webp"
+            
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(url) as resp:
@@ -94,7 +102,7 @@ class BiliUtils:
         else:
             return f"{m}分{s}秒"
 
-# 3. 核心监控逻辑
+# ================= 3. 核心监控逻辑 =================
 class BiliMonitor:
     def __init__(self):
         self.running = False
@@ -183,11 +191,9 @@ class BiliMonitor:
                     raw_groups = sub.get("groups", [])
                     if not raw_groups: continue
                     
-                    current_entry_stream_ids = set()
+                    current_entry_group_ids = set()
                     for gid in raw_groups:
-                        # 使用原生 MD5 算法生成 Stream ID
-                        session_id = BiliUtils.calculate_session_id("qq", str(gid))
-                        current_entry_stream_ids.add(session_id)
+                        current_entry_group_ids.add(int(gid)) 
 
                     target_uids = []
                     if "uid" in sub and sub["uid"]: 
@@ -199,7 +205,7 @@ class BiliMonitor:
                         if not uid: continue
                         if uid not in uid_to_stream_ids:
                             uid_to_stream_ids[uid] = set()
-                        uid_to_stream_ids[uid].update(current_entry_stream_ids)
+                        uid_to_stream_ids[uid].update(current_entry_group_ids)
 
                 found_new_things = False
                 for uid, stream_ids_set in uid_to_stream_ids.items():
@@ -341,10 +347,8 @@ class BiliMonitor:
                     f"🏁 【{uname}】下播了~\n"
                     f"⏱️ 本次直播时长：{duration_str}"
                 )
-                for sid in stream_ids: 
-                    try:
-                        await self.ctx.send.text(msg, sid)
-                    except: pass
+                # 统一使用透传 API 发送，第二个参数 cover 为空字符串即可
+                await self.push_simple(msg, "", stream_ids)
                 
                 user_hist['live_start_time'] = 0
                 has_event = True
@@ -359,45 +363,106 @@ class BiliMonitor:
         except Exception as e:
             return False
 
-    async def push_simple(self, text: str, image_url: str, stream_ids: List[str]):
+    async def push_simple(self, text: str, image_url: str, group_ids: List[int]):
         b64 = None
         if image_url:
             b64 = await BiliUtils.url_to_base64(image_url)
         
-        for sid in stream_ids:
+        for gid in group_ids:
+            message_chain = [{"type": "text", "data": {"text": text}}]
+            if b64:
+                message_chain.append({"type": "text", "data": {"text": "\n"}})
+                message_chain.append({"type": "image", "data": {"file": f"base64://{b64}"}})
+            
             try:
-                await self.ctx.send.text(text, sid)
-                if b64:
-                    await self.ctx.send.image(b64, sid)
-            except Exception:
-                pass 
+                await self.ctx.api.call(
+                    "adapter.napcat.message.send_msg",
+                    params={
+                        "message_type": "group",
+                        "group_id": gid,
+                        "message": message_chain
+                    }
+                )
+            except Exception as e:
+                self.ctx.logger.error(f"发送普通消息失败: {e}")
 
-    async def process_and_push(self, item: Dict, stream_ids: List[str], max_imgs: int):
+    async def process_and_push(self, item: Dict, group_ids: List[int], max_imgs: int):
         parsed = self.parse_dynamic(item)
         if not parsed: return
 
         author = parsed.get('author', 'UP主')
-        text = f"📢 【{author}】发布了新动态！{parsed['text']}\n🔗 链接: {parsed['url']}"
+        text = f"📢 【{author}】发布了新动态！\n{parsed['text']}\n🔗 链接: {parsed['url']}"
 
-        images = parsed['images']
+        # 这里的 images 依然建议做一个上限截断（比如最多 9 或 18 张），防止无限下载
+        images = parsed['images'][:9] 
         
-        if len(images) > max_imgs:
-            text += f"\n⚠️ 动态图片过多，共【{len(images)}】张，请点击链接去原动态查看图片。"
-            images = []
-        
-        for sid in stream_ids:
-            try:
-                await self.ctx.send.text(text=text, stream_id=sid)
-            except: pass
-
+        # 1. 提前缓存所有图片，下载为 base64
+        cached_b64s = []
         for img_url in images:
             b64 = await BiliUtils.url_to_base64(img_url)
             if b64:
-                for sid in stream_ids:
-                    try:
-                        await self.ctx.send.image(b64, sid)
-                        await asyncio.sleep(0.5)
-                    except: pass
+                cached_b64s.append(b64)
+        
+        num_imgs = len(cached_b64s)
+
+        # 2. 根据缓存下来的图片数量做判断
+        if num_imgs > max_imgs:
+            
+            # 准备图片转发节点 (不含文字)
+            bot_name = author
+            bot_uin = "10000"
+            forward_nodes = []
+            for b64 in cached_b64s:
+                forward_nodes.append({
+                    "type": "node",
+                    "data": {
+                        "name": bot_name,
+                        "uin": bot_uin,
+                        "content": [{"type": "image", "data": {"file": f"base64://{b64}"}}]
+                    }
+                })
+
+            for gid in group_ids:
+                try:
+                    # 先发文字气泡
+                    await self.ctx.api.call(
+                        "adapter.napcat.message.send_msg",
+                        params={
+                            "message_type": "group",
+                            "group_id": gid,
+                            "message": [{"type": "text", "data": {"text": text}}]
+                        }
+                    )
+                    # 紧接着发图片合并包
+                    await self.ctx.api.call(
+                        "adapter.napcat.message.send_group_forward_msg",
+                        params={
+                            "group_id": gid,
+                            "message": forward_nodes
+                        }
+                    )
+                    await asyncio.sleep(0.5)
+                except Exception as e:
+                    self.ctx.logger.error(f"发送合并转发(仅图片)失败: {e}")
+        else:
+            # === 未达到阔值：图文封装在一个气泡中发送 ===
+            message_chain = [{"type": "text", "data": {"text": text + "\n"}}]
+            for b64 in cached_b64s:
+                message_chain.append({"type": "image", "data": {"file": f"base64://{b64}"}})
+            
+            for gid in group_ids:
+                try:
+                    await self.ctx.api.call(
+                        "adapter.napcat.message.send_msg",
+                        params={
+                            "message_type": "group",
+                            "group_id": gid,
+                            "message": message_chain
+                        }
+                    )
+                    await asyncio.sleep(0.5)
+                except Exception as e:
+                    self.ctx.logger.error(f"发送同气泡图文失败: {e}")
 
     def _extract_major_data(self, module_dynamic: Dict) -> Tuple[str, List[str]]:
         text = ""
@@ -416,11 +481,11 @@ class BiliMonitor:
             items = major.get('draw', {}).get('items', [])
             images = [i.get('src') for i in items]
             
-        elif major_type == 'MAJOR_TYPE_ARCHIVE':
-            archive = major.get('archive') or {}
-            title = archive.get('title', '视频')
-            desc = archive.get('desc', '')
-            cover = archive.get('cover', '')
+        elif major_type in ['MAJOR_TYPE_ARCHIVE', 'MAJOR_TYPE_VIDEO']:
+            video_data = major.get('archive') or major.get('video') or {}
+            title = video_data.get('title', '视频投稿')
+            desc = video_data.get('desc', '')
+            cover = video_data.get('cover', '')
             text = f"📺 {title}\n{desc}"
             if cover: images.append(cover)
             
@@ -478,7 +543,7 @@ class BiliMonitor:
 
 monitor_instance = BiliMonitor()
 
-# 4. 插件注册入口
+# ================= 4. 插件注册入口 =================
 class BiliPlugin(MaiBotPlugin):
     config_model = BiliPluginConfig
 
@@ -504,8 +569,28 @@ class BiliPlugin(MaiBotPlugin):
         pattern=r"^/bili_control\s+(?P<action>start|stop|status|test|info)(?:\s+(?P<arg>.*))?\s*$"
     )
     async def handle_bili_control(self, stream_id: str = "", matched_groups: dict = None, **kwargs) -> tuple:
-        current_user = kwargs.get("user_id") or kwargs.get("message_base_info", {}).get("user_info", {}).get("user_id")
+        # 获取基础信息
+        base_info = kwargs.get("message_base_info", {})
+        current_user = kwargs.get("user_id") or base_info.get("user_info", {}).get("user_id")
         
+        group_id = None
+        
+        group_id = kwargs.get("group_id")
+        
+        if not group_id and "raw_event" in kwargs:
+            raw_event = kwargs["raw_event"]
+            if isinstance(raw_event, dict):
+                group_id = raw_event.get("group_id")
+            else:
+                group_id = getattr(raw_event, "group_id", None)
+                
+        if not group_id:
+            group_id = base_info.get("group_id")
+            
+        if not group_id:
+            self.ctx.logger.error(f"提取群号失败！当前 kwargs 包含的键有: {list(kwargs.keys())}")
+            return False, "请在群聊内使用控制指令，以获取准确的真实群号(Group ID)", True
+
         if not current_user:
             self.ctx.logger.error("❌ 无法获取发送者ID")
             return False, "鉴权失败", True
@@ -570,7 +655,7 @@ class BiliPlugin(MaiBotPlugin):
                             f"{duration_text}"
                         )
                         cover = live_room.get('cover', '')
-                        await monitor_instance.push_simple(msg, cover, [stream_id])
+                        await monitor_instance.push_simple(msg, cover, [int(group_id)])
                         self.ctx.logger.info(f"✅ UID {arg} 的直播状态已成功推送到群聊")
                     else:
                         self.ctx.logger.info(f"⚪ 状态查询结果：【{uname}】未开播。")
@@ -591,13 +676,13 @@ class BiliPlugin(MaiBotPlugin):
                     self.ctx.logger.info("⚠️ 该 UID 暂无动态")
                 else:
                     item_to_push = items[0]
-                    await monitor_instance.process_and_push(item_to_push, [stream_id], 9)
+                    await monitor_instance.process_and_push(item_to_push, [int(group_id)], 9)
                     self.ctx.logger.info("✅ 测试推送已成功发送到群聊")
             except Exception as e: 
                 self.ctx.logger.error(f"❌ 推送错误: {e}")
 
         return True, f"后台静默执行了 {action} 指令", True
 
-# 5. 工厂函数入口
+# ================= 5. 工厂函数入口 =================
 def create_plugin():
     return BiliPlugin()
