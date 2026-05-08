@@ -676,7 +676,8 @@ class BiliPlugin(MaiBotPlugin):
                     self.ctx.logger.info("⚠️ 该 UID 暂无动态")
                 else:
                     item_to_push = items[0]
-                    await monitor_instance.process_and_push(item_to_push, [int(group_id)], 9)
+                    current_max_imgs = self.config.settings.max_images
+                    await monitor_instance.process_and_push(item_to_push, [int(group_id)], current_max_imgs)
                     self.ctx.logger.info("✅ 测试推送已成功发送到群聊")
             except Exception as e: 
                 self.ctx.logger.error(f"❌ 推送错误: {e}")
