@@ -10,6 +10,7 @@ import hashlib
 from datetime import datetime
 from urllib.parse import unquote
 from typing import Dict, Any, List, Optional, Tuple
+from asyncio import Lock
 
 from maibot_sdk import MaiBotPlugin, Command, Field, PluginConfigBase, CONFIG_RELOAD_SCOPE_SELF
 from bilibili_api import user, Credential
@@ -45,25 +46,73 @@ class BiliPluginConfig(PluginConfigBase):
     settings: SettingsSection = Field(default_factory=SettingsSection)
     subscriptions: SubscriptionsSection = Field(default_factory=SubscriptionsSection)
 
-# ================= 2. 辅助工具类 =================
+# ================= 2. 订阅管理器 (动静结合) =================
+class SubscriptionManager:
+    def __init__(self):
+        self.file_path = os.path.join(os.path.dirname(__file__), "subscriptions.json")
+        self.lock = asyncio.Lock()
+        self.data = {"static": {}, "custom": {}}
+        self._load_sync() 
+
+    def _load_sync(self):
+        if os.path.exists(self.file_path):
+            try:
+                with open(self.file_path, 'r', encoding='utf-8') as f:
+                    self.data = json.load(f)
+            except Exception:
+                self.data = {"static": {}, "custom": {}}
+        else:
+            self.data = {"static": {}, "custom": {}}
+
+    async def save(self):
+        async with self.lock:
+            def _write():
+                with open(self.file_path, 'w', encoding='utf-8') as f:
+                    json.dump(self.data, f, indent=2, ensure_ascii=False)
+            await asyncio.to_thread(_write)
+
+    async def sync_static(self, config_users: list):
+        new_static = {}
+        for sub in config_users:
+            raw_groups = sub.get("groups", [])
+            uids = []
+            if sub.get("uid"): uids.append(str(sub["uid"]))
+            if sub.get("uids") and isinstance(sub.get("uids"), list): 
+                uids.extend([str(x) for x in sub["uids"]])
+            
+            for uid in uids:
+                if uid not in new_static:
+                    new_static[uid] = []
+                new_static[uid].extend([int(g) for g in raw_groups])
+        
+        async with self.lock:
+            self.data["static"] = new_static
+        await self.save()
+
+    def get_merged_map(self) -> dict:
+        merged = {}
+        for source in ["static", "custom"]:
+            for uid, groups in self.data.get(source, {}).items():
+                if uid not in merged:
+                    merged[uid] = set()
+                merged[uid].update(groups)
+        return merged
+
+sub_manager = SubscriptionManager()
+
+# ================= 3. 辅助工具类 =================
 class BiliUtils:
     @staticmethod
-    def calculate_session_id(platform: str, group_id: str) -> str:
-        components = [platform, group_id]
-        return hashlib.md5("_".join(components).encode()).hexdigest()
-
-    @staticmethod
-    async def url_to_base64(url: str) -> Optional[str]:
-        if not url:
+    async def url_to_base64(url: str, session: aiohttp.ClientSession) -> Optional[str]:
+        if not url or not session:
             return None
         if "hdslb.com" in url and "@" not in url and not url.lower().endswith(".gif"):
             url = f"{url}@1080w_1e_1c.webp"
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url) as resp:
-                    if resp.status == 200:
-                        data = await resp.read()
-                        return base64.b64encode(data).decode('utf-8')
+            async with session.get(url) as resp:
+                if resp.status == 200:
+                    data = await resp.read()
+                    return base64.b64encode(data).decode('utf-8')
         except Exception as e:
             logger.error(f"图片下载失败: {url}, 错误: {e}")
             return None
@@ -100,7 +149,7 @@ class BiliUtils:
         else:
             return f"{m}分{s}秒"
 
-# ================= 3. 核心监控逻辑 =================
+# ================= 4. 核心监控逻辑 =================
 class BiliMonitor:
     def __init__(self):
         self.running = False
@@ -109,6 +158,15 @@ class BiliMonitor:
         self._tasks = []
         self.ctx = None
         self.config = None 
+        self.session = None 
+        self.uid_to_stream_ids = {} 
+
+    async def update_subscription_map(self):
+        if self.config and self.config.subscriptions.users:
+            await sub_manager.sync_static(self.config.subscriptions.users)
+        self.uid_to_stream_ids = sub_manager.get_merged_map()
+        if self.ctx:
+            self.ctx.logger.info(f"🔄 订阅映射已更新：当前共监控 {len(self.uid_to_stream_ids)} 个 B站 UID")
 
     async def start(self, ctx, config):
         if self.running:
@@ -116,6 +174,11 @@ class BiliMonitor:
         self.running = True
         self.ctx = ctx
         self.config = config
+        
+        if not self.session or self.session.closed:
+            timeout = aiohttp.ClientTimeout(total=30)
+            self.session = aiohttp.ClientSession(timeout=timeout)
+
         self.ctx.logger.info("🟢 启动 Bilibili 监控任务...")
         
         cred_dict = self.config.settings.credential
@@ -139,6 +202,7 @@ class BiliMonitor:
                 except Exception as e: 
                     self.ctx.logger.error(f"❌ 凭证加载失败: {e}")
         
+        await self.update_subscription_map()
         self._tasks.append(asyncio.create_task(self.loop()))
         self._tasks.append(asyncio.create_task(self.refresh_credential_loop()))
 
@@ -151,6 +215,11 @@ class BiliMonitor:
             except Exception:
                 pass
         self._tasks = []
+        
+        if self.session and not self.session.closed:
+            await self.session.close()
+            self.session = None
+
         if self.ctx:
             self.ctx.logger.info("🛑 Bilibili 监控停止")
 
@@ -172,12 +241,11 @@ class BiliMonitor:
                     await asyncio.sleep(10)
                     continue
 
-                subs = self.config.subscriptions.users
                 base_interval = self.config.settings.poll_interval
                 jitter = self.config.settings.poll_jitter
                 max_imgs = self.config.settings.max_images
 
-                if not subs:
+                if not self.uid_to_stream_ids:
                     await asyncio.sleep(base_interval)
                     continue
 
@@ -187,32 +255,8 @@ class BiliMonitor:
                     max_time = base_interval + jitter
                     actual_interval = random.randint(min_time, max_time)
 
-                uid_to_stream_ids = {}
-
-                for sub in subs:
-                    raw_groups = sub.get("groups", [])
-                    if not raw_groups:
-                        continue
-                    
-                    current_entry_group_ids = set()
-                    for gid in raw_groups:
-                        current_entry_group_ids.add(int(gid))
-
-                    target_uids = []
-                    if "uid" in sub and sub["uid"]: 
-                        target_uids.append(str(sub["uid"]))
-                    if "uids" in sub and isinstance(sub["uids"], list):
-                        target_uids.extend([str(x) for x in sub["uids"]])
-                    
-                    for uid in set(target_uids):
-                        if not uid:
-                            continue
-                        if uid not in uid_to_stream_ids:
-                            uid_to_stream_ids[uid] = set()
-                        uid_to_stream_ids[uid].update(current_entry_group_ids)
-
                 found_new_things = False
-                for uid, stream_ids_set in uid_to_stream_ids.items():
+                for uid, stream_ids_set in self.uid_to_stream_ids.items():
                     target_stream_ids = list(stream_ids_set)
                     
                     pushed_dyn = await self.check_dynamic(uid, target_stream_ids, max_imgs)
@@ -292,7 +336,6 @@ class BiliMonitor:
             latest_item_to_push = new_items[0]
             latest_id_str = str(latest_item_to_push['id_str'])
 
-            # 检查动态时效性
             max_age = self.config.settings.max_dynamic_age if self.config else 3600
             pub_ts = 0
             try:
@@ -398,7 +441,7 @@ class BiliMonitor:
     async def push_simple(self, text: str, image_url: str, group_ids: List[int]):
         b64 = None
         if image_url:
-            b64 = await BiliUtils.url_to_base64(image_url)
+            b64 = await BiliUtils.url_to_base64(image_url, self.session)
         
         for gid in group_ids:
             message_chain = [{"type": "text", "data": {"text": text}}]
@@ -424,8 +467,6 @@ class BiliMonitor:
             return
 
         author = parsed.get('author', 'UP主')
-        
-        # 格式化发布时间
         pub_ts = parsed.get('pub_ts', 0)
         try:
             pub_ts = int(pub_ts) if pub_ts else 0
@@ -448,7 +489,7 @@ class BiliMonitor:
         
         cached_b64s = []
         for img_url in images:
-            b64 = await BiliUtils.url_to_base64(img_url)
+            b64 = await BiliUtils.url_to_base64(img_url, self.session)
             if b64:
                 cached_b64s.append(b64)
         
@@ -554,7 +595,6 @@ class BiliMonitor:
                     self.ctx.logger.info(f"🛑 拦截到开奖通知动态 (ID: {id_str})，已丢弃，不进行推送。")
                     return None
 
-            # 提取发布时间戳
             raw_pub_ts = module_author.get('pub_ts', 0)
             try:
                 pub_ts = int(raw_pub_ts) if raw_pub_ts else 0
@@ -602,7 +642,7 @@ class BiliMonitor:
 
 monitor_instance = BiliMonitor()
 
-# ================= 4. 插件注册入口 =================
+# ================= 5. 插件注册入口 =================
 class BiliPlugin(MaiBotPlugin):
     config_model = BiliPluginConfig
 
@@ -621,11 +661,12 @@ class BiliPlugin(MaiBotPlugin):
         if scope == CONFIG_RELOAD_SCOPE_SELF:
             self.ctx.logger.info(f"B站监控配置已热重载更新: {version}")
             monitor_instance.config = self.config
+            await monitor_instance.update_subscription_map()
 
     @Command(
-        "bili_control",
+        "B动态",
         description="B站订阅控制",
-        pattern=r"^/bili_control\s+(?P<action>start|stop|status|test|info)(?:\s+(?P<arg>.*))?\s*$"
+        pattern=r"^/B动态\s+(?P<action>start|stop|status|test|info|add|remove|list|help)(?:\s+(?P<arg>.*))?\s*$"
     )
     async def handle_bili_control(self, stream_id: str = "", matched_groups: dict = None, **kwargs) -> tuple:
         base_info = kwargs.get("message_base_info", {})
@@ -647,99 +688,196 @@ class BiliPlugin(MaiBotPlugin):
             self.ctx.logger.error(f"提取群号失败！当前 kwargs 包含的键有: {list(kwargs.keys())}")
             return False, "请在群聊内使用控制指令，以获取准确的真实群号(Group ID)", True
 
-        if not current_user:
-            self.ctx.logger.error("❌ 无法获取发送者ID")
-            return False, "鉴权失败", True
-
         admin_list = [str(x) for x in self.config.settings.admin_qqs]
 
         if current_user not in admin_list:
             self.ctx.logger.warning(f"⚠️ 非管理员尝试执行指令: {current_user}")
-            return False, "权限不足", True
+            return False, None, False
+
+        async def reply_group(text: str):
+            try:
+                await self.ctx.api.call(
+                    "adapter.napcat.message.send_msg",
+                    params={
+                        "message_type": "group",
+                        "group_id": int(group_id),
+                        "message": [{"type": "text", "data": {"text": text}}]
+                    }
+                )
+            except Exception as e:
+                self.ctx.logger.error(f"群消息反馈失败: {e}")
 
         action = matched_groups.get("action") if matched_groups else None
-        arg = matched_groups.get("arg") if matched_groups else None
-        
-        if arg:
-            arg = arg.strip()
+        arg = matched_groups.get("arg").strip() if matched_groups and matched_groups.get("arg") else None
 
         if action == "start":
             if monitor_instance.running: 
-                self.ctx.logger.info("⚠️ 启动指令被忽略：B站监控已在运行")
+                return True, "⚠️ B站监控已在运行中，无需重复启动。", True
             else:
                 await monitor_instance.start(self.ctx, self.config)
-                self.ctx.logger.info("✅ 监控已通过指令启动")
+                return True, "✅ B站监控已成功启动。", True
         
         elif action == "stop":
             await monitor_instance.stop()
-            self.ctx.logger.info("🛑 监控已通过指令停止")
+            return True, "🛑 B站监控已停止运行。", True
         
         elif action == "status":
-            st = "🟢" if monitor_instance.running else "🔴"
-            subs = self.config.subscriptions.users
-            cnt = len(subs) if subs else 0
-            self.ctx.logger.info(f"📊 当前状态:{st} | 订阅数:{cnt}")
+            st = "🟢 运行中" if monitor_instance.running else "🔴 已停止"
+            cnt = len(monitor_instance.uid_to_stream_ids)
+            msg = f"📊 B站监控状态: {st}\n当前共监控 {cnt} 个 B站 UID。"
+            return True, msg, True
 
         elif action == "info":
             if not arg:
-                self.ctx.logger.error("❌ 用法错误: /bili_control info <uid>")
-            else:
-                try:
-                    self.ctx.logger.info(f"🔍 正在查询 UID {arg} ...")
-                    u = user.User(int(arg), credential=monitor_instance.credential)
-                    raw_info = await u.get_live_info()
+                await reply_group("❌ 用法错误: /B动态 info <uid>")
+                return True, None, True
+            try:
+                u = user.User(int(arg), credential=monitor_instance.credential)
+                raw_info = await u.get_live_info()
+                
+                live_room = raw_info.get('live_room', {})
+                status = live_room.get('liveStatus', 0)
+                uname = raw_info.get('name', '未知')
+                
+                if status == 1:
+                    user_hist = monitor_instance.history.get(arg, {})
+                    start_time = user_hist.get('live_start_time', 0) if isinstance(user_hist, dict) else 0
                     
-                    live_room = raw_info.get('live_room', {})
-                    status = live_room.get('liveStatus', 0)
-                    uname = raw_info.get('name', '未知')
-                    
-                    if status == 1:
-                        user_hist = monitor_instance.history.get(arg, {})
-                        if isinstance(user_hist, dict):
-                            start_time = user_hist.get('live_start_time', 0)
-                        else:
-                            start_time = 0
-                        
-                        duration_text = ""
-                        if start_time:
-                            sec = time.time() - start_time
-                            duration_text = f"\n⏱️ 已直播: {BiliUtils.format_duration(sec)}"
+                    duration_text = ""
+                    if start_time:
+                        sec = time.time() - start_time
+                        duration_text = f"\n⏱️ 已直播: {BiliUtils.format_duration(sec)}"
 
-                        msg = (
-                            f"🟢 【{uname}】正在直播中！\n"
-                            f"📺 {live_room.get('title')}\n"
-                            f"🔗 {live_room.get('url')}"
-                            f"{duration_text}"
-                        )
-                        cover = live_room.get('cover', '')
-                        await monitor_instance.push_simple(msg, cover, [int(group_id)])
-                        self.ctx.logger.info(f"✅ UID {arg} 的直播状态已成功推送到群聊")
-                    else:
-                        self.ctx.logger.info(f"⚪ 状态查询结果：【{uname}】未开播。")
-                except Exception as e:
-                    self.ctx.logger.error(f"❌ 查询失败: {e}")
+                    msg = (
+                        f"🟢 【{uname}】正在直播中！\n"
+                        f"📺 {live_room.get('title')}\n"
+                        f"🔗 {live_room.get('url')}"
+                        f"{duration_text}"
+                    )
+                    cover = live_room.get('cover', '')
+                    await monitor_instance.push_simple(msg, cover, [int(group_id)])
+                    return True, "✅ 直播状态已推送到当前群聊。", True
+                else:
+                    return True, f"⚪ 状态查询结果：【{uname}】未开播。", True
+            except Exception as e:
+                return True, f"❌ 查询失败: {e}", True
 
         elif action == "test":
             if not arg:
-                self.ctx.logger.error("❌ 用法错误: /bili_control test <uid>")
-                return False, "参数错误", True
+                return True, "❌ 用法错误: /B动态 test <uid>", True
             
-            self.ctx.logger.info(f"🧪 开始测试动态推送 UID {arg}...")
             try:
                 u = user.User(int(arg), credential=monitor_instance.credential)
                 dyn = await u.get_dynamics_new()
                 items = dyn.get('items', [])
                 if not items: 
-                    self.ctx.logger.info("⚠️ 该 UID 暂无动态")
+                    return True, "⚠️ 该 UID 暂无动态", True
                 else:
                     item_to_push = items[0]
                     current_max_imgs = self.config.settings.max_images
                     await monitor_instance.process_and_push(item_to_push, [int(group_id)], current_max_imgs)
-                    self.ctx.logger.info("✅ 测试推送已成功发送到群聊")
+                    return True, "✅ 测试推送已成功发送到群聊", True
             except Exception as e: 
-                self.ctx.logger.error(f"❌ 推送错误: {e}")
+                return True, f"❌ 推送错误: {e}", True
 
-        return True, f"后台静默执行了 {action} 指令", True
+        elif action == "add":
+            if not arg or not arg.isdigit():
+                await reply_group("❌ 参数错误！请提供正确的纯数字UID。\n用法: /B动态 add <UID>")
+                return True, None, True
+            
+            uid = str(arg)
+            gid = int(group_id)
+            
+            uname = "未知UP主"
+            try:
+                u = user.User(int(uid), credential=monitor_instance.credential)
+                info = await u.get_user_info()
+                uname = info.get('name', '未知UP主')
+            except Exception as e:
+                self.ctx.logger.error(f"获取UID {uid} 昵称失败: {e}")
+
+            async with sub_manager.lock:
+                if uid not in sub_manager.data["custom"]:
+                    sub_manager.data["custom"][uid] = []
+                if gid not in sub_manager.data["custom"][uid]:
+                    sub_manager.data["custom"][uid].append(gid)
+            
+            await sub_manager.save()
+            await monitor_instance.update_subscription_map()
+            await reply_group("✅ 已成功加入当前群聊的动态订阅列表！")
+            return True, None, True
+
+        elif action == "remove":
+            if not arg or not arg.isdigit():
+                await reply_group("❌ 参数错误！请提供正确的数字UID。\n用法: /B动态 remove <UID>")
+                return True, None, True
+            
+            uid = str(arg)
+            gid = int(group_id)
+            need_save = False
+            
+            static_groups = sub_manager.data["static"].get(uid, [])
+            if gid in static_groups:
+                await reply_group("⚠️ 无法移除！\n该UID是在 config 配置文件中固定订阅的。")
+                return True, None, True
+
+            async with sub_manager.lock:
+                custom_groups = sub_manager.data["custom"].get(uid, [])
+                if gid in custom_groups:
+                    sub_manager.data["custom"][uid].remove(gid)
+                    if not sub_manager.data["custom"][uid]:
+                        del sub_manager.data["custom"][uid]
+                    need_save = True
+                else:
+                    await reply_group("⚪ 当前群聊并没有通过指令订阅过此UID，无需移除。")
+                    return True, None, True
+
+            if need_save:
+                await sub_manager.save()
+                await monitor_instance.update_subscription_map()
+                await reply_group("🗑️ 已成功将此UID 从当前群聊的动态订阅中移除。")
+                return True, None, True
+
+        elif action == "list":
+            gid = int(group_id)
+            static_list = []
+            custom_list = []
+            
+            for uid, groups in sub_manager.data["static"].items():
+                if gid in groups: static_list.append(uid)
+            for uid, groups in sub_manager.data["custom"].items():
+                if gid in groups: custom_list.append(uid)
+                
+            if not static_list and not custom_list:
+                await reply_group("📭 当前群聊暂无任何B站订阅。")
+                return True, None, True
+                
+            msg = "📋 【当前群聊订阅列表】\n"
+            if static_list:
+                msg += f"\n[固定配置] ({len(static_list)}个):\n- " + "\n- ".join(static_list)
+            if custom_list:
+                msg += f"\n\n[动态添加] ({len(custom_list)}个):\n- " + "\n- ".join(custom_list)
+            msg += "\n\n💡 提示：使用 /B动态 remove [UID] 仅可移除[动态添加]的订阅。"
+            
+            await reply_group(msg)
+            return True, None, True
+
+        elif action == "help":
+            help_text = (
+                "🛠️ Bilibili 订阅管理指令\n"
+                "------------------\n"
+                "➕ /B动态 add [UID]\n   添加当前群聊对该 UID 的订阅\n"
+                "➖ /B动态 remove [UID]\n   移除当前群聊的动态订阅\n"
+                "📋 /B动态 list\n   列出当前群组的所有订阅源\n"
+                "🔍 /B动态 info [UID]\n   查询该 UID 实时直播状态\n"
+                "🧪 /B动态 test [UID]\n   触发一次动态推送测试\n"
+                "------------------\n"
+                "⚠️ 仅管理员可用，固定订阅需改后台 Config"
+            )
+            await reply_group(help_text)  # 先显式发到群里
+            return True, None, True       # 成功拦截即可，不需要框架再处理文本了
+
+        return True, f"❌ 未知指令: {action}。发送 /B动态 help 查看帮助。", True
 
 # ================= 5. 工厂函数入口 =================
 def create_plugin():
