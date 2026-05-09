@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "version": "2.1.0",
-  "name": "B站动态推送 (Bilibili Dynamic Push Plugin)",
+  "name": "B站动态推送",
   "description": "适用于MaiBot的B站动态订阅与直播状态自动推送插件",
   "author": {
     "name": "白狐",
@@ -10,7 +10,7 @@
   "license": "MIT",
   "urls": {
     "repository": "https://github.com/whitefox20011120/bilibili_dynamic_push_plugin",
-    "homepage": "https://github.com/whitefox20011120",
+    "homepage": "https://github.com/whitefox20011120/bilibili_dynamic_push_plugin",
     "documentation": "https://github.com/whitefox20011120/bilibili_dynamic_push_plugin",
     "issues": "https://github.com/whitefox20011120/bilibili_dynamic_push_plugin"
   },
