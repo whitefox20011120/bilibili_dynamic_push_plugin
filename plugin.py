@@ -17,7 +17,7 @@ import logging
 
 logger = logging.getLogger("bilibili_dynamic_push")
 
-# 1. 配置模型
+# ================= 1. 配置模型 =================
 class PluginSection(PluginConfigBase):
     __ui_label__ = "插件开关"
     enabled: bool = Field(default=True, description="是否启用")
@@ -31,6 +31,7 @@ class SettingsSection(PluginConfigBase):
     credential: dict = Field(default_factory=dict, description="Cookie凭证")
     max_images: int = Field(default=3, description="最大图片数")
     ignore_lottery: bool = Field(default=True, description="自动丢弃开奖动态")
+    max_dynamic_age: int = Field(default=3600, description="动态最大有效时长(秒)，超过则不推送，默认3600=1小时")
 
 class SubscriptionsSection(PluginConfigBase):
     __ui_label__ = "订阅"
@@ -44,7 +45,7 @@ class BiliPluginConfig(PluginConfigBase):
     settings: SettingsSection = Field(default_factory=SettingsSection)
     subscriptions: SubscriptionsSection = Field(default_factory=SubscriptionsSection)
 
-# 2. 辅助工具类
+# ================= 2. 辅助工具类 =================
 class BiliUtils:
     @staticmethod
     def calculate_session_id(platform: str, group_id: str) -> str:
@@ -53,11 +54,10 @@ class BiliUtils:
 
     @staticmethod
     async def url_to_base64(url: str) -> Optional[str]:
-        if not url: return None
-        
+        if not url:
+            return None
         if "hdslb.com" in url and "@" not in url and not url.lower().endswith(".gif"):
             url = f"{url}@1080w_1e_1c.webp"
-            
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.get(url) as resp:
@@ -79,7 +79,8 @@ class BiliUtils:
             if os.path.exists(path):
                 with open(path, 'r', encoding='utf-8') as f:
                     return json.load(f)
-        except: pass
+        except Exception:
+            pass
         return {}
 
     @staticmethod
@@ -87,7 +88,8 @@ class BiliUtils:
         try:
             with open(BiliUtils.get_history_path(), 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=2)
-        except: pass
+        except Exception:
+            pass
     
     @staticmethod
     def format_duration(seconds: float) -> str:
@@ -98,7 +100,7 @@ class BiliUtils:
         else:
             return f"{m}分{s}秒"
 
-# 3. 核心监控逻辑
+# ================= 3. 核心监控逻辑 =================
 class BiliMonitor:
     def __init__(self):
         self.running = False
@@ -109,7 +111,8 @@ class BiliMonitor:
         self.config = None 
 
     async def start(self, ctx, config):
-        if self.running: return
+        if self.running:
+            return
         self.running = True
         self.ctx = ctx
         self.config = config
@@ -124,7 +127,7 @@ class BiliMonitor:
                         try:
                             decoded_v = unquote(v)
                             valid_cred[k] = decoded_v
-                        except:
+                        except Exception:
                             valid_cred[k] = v
                     else:
                         valid_cred[k] = v
@@ -143,10 +146,13 @@ class BiliMonitor:
         self.running = False
         for task in self._tasks:
             task.cancel()
-            try: await task
-            except: pass
+            try:
+                await task
+            except Exception:
+                pass
         self._tasks = []
-        self.ctx.logger.info("🛑 Bilibili 监控停止")
+        if self.ctx:
+            self.ctx.logger.info("🛑 Bilibili 监控停止")
 
     async def refresh_credential_loop(self):
         while self.running:
@@ -185,11 +191,12 @@ class BiliMonitor:
 
                 for sub in subs:
                     raw_groups = sub.get("groups", [])
-                    if not raw_groups: continue
+                    if not raw_groups:
+                        continue
                     
                     current_entry_group_ids = set()
                     for gid in raw_groups:
-                        current_entry_group_ids.add(int(gid)) 
+                        current_entry_group_ids.add(int(gid))
 
                     target_uids = []
                     if "uid" in sub and sub["uid"]: 
@@ -198,7 +205,8 @@ class BiliMonitor:
                         target_uids.extend([str(x) for x in sub["uids"]])
                     
                     for uid in set(target_uids):
-                        if not uid: continue
+                        if not uid:
+                            continue
                         if uid not in uid_to_stream_ids:
                             uid_to_stream_ids[uid] = set()
                         uid_to_stream_ids[uid].update(current_entry_group_ids)
@@ -230,10 +238,12 @@ class BiliMonitor:
             u = user.User(int(uid), credential=self.credential)
             dynamics = await u.get_dynamics_new()
             items = dynamics.get('items', [])
-            if not items: return False
+            if not items:
+                return False
 
             user_hist = self.history.get(uid, {})
-            if isinstance(user_hist, str): user_hist = {'dyn_id': user_hist}
+            if isinstance(user_hist, str):
+                user_hist = {'dyn_id': user_hist}
             
             last_saved_id = user_hist.get('dyn_id')
             
@@ -260,22 +270,48 @@ class BiliMonitor:
                     major_type = item.get('modules', {}).get('module_dynamic', {}).get('major', {}).get('type')
                     if major_type == 'MAJOR_TYPE_LIVE_RCMD':
                         continue
-                except: pass
+                except Exception:
+                    pass
 
                 is_top = False
                 try:
-                    if item.get('modules', {}).get('module_tag', {}).get('text') == '置顶': is_top = True
-                except: pass
+                    if item.get('modules', {}).get('module_tag', {}).get('text') == '置顶':
+                        is_top = True
+                except Exception:
+                    pass
                 
                 if int(curr_id) > int(last_saved_id):
                     new_items.append(item)
                 else:
-                    if not is_top: break
+                    if not is_top:
+                        break
             
-            if not new_items: return False
+            if not new_items:
+                return False
 
             latest_item_to_push = new_items[0]
             latest_id_str = str(latest_item_to_push['id_str'])
+
+            # 检查动态时效性
+            max_age = self.config.settings.max_dynamic_age if self.config else 3600
+            pub_ts = 0
+            try:
+                raw_pub_ts = latest_item_to_push.get('modules', {}).get('module_author', {}).get('pub_ts', 0)
+                pub_ts = int(raw_pub_ts) if raw_pub_ts else 0
+            except (ValueError, TypeError, AttributeError):
+                pub_ts = 0
+
+            now_ts = time.time()
+            if pub_ts > 0 and (now_ts - pub_ts) > max_age:
+                age_str = BiliUtils.format_duration(now_ts - pub_ts)
+                self.ctx.logger.info(
+                    f"⏳ UID {uid} 发现新动态 {latest_id_str}，但发布于 {age_str} 前，"
+                    f"超过设定阈值 {max_age} 秒，静默更新基准ID不推送。"
+                )
+                user_hist['dyn_id'] = latest_id_str
+                self.history[uid] = user_hist
+                BiliUtils.save_history(self.history)
+                return False
 
             self.ctx.logger.info(f"🎉 UID {uid} 发现新动态: {latest_id_str} (准备推送到 {len(stream_ids)} 个流节点)")
             await self.process_and_push(latest_item_to_push, stream_ids, max_imgs)
@@ -303,7 +339,8 @@ class BiliMonitor:
             uname = raw_info.get('name', 'UP主')
 
             user_hist = self.history.get(uid, {})
-            if isinstance(user_hist, str): user_hist = {'dyn_id': user_hist}
+            if isinstance(user_hist, str):
+                user_hist = {'dyn_id': user_hist}
             
             last_status = user_hist.get('live_status', 0)
             start_time = user_hist.get('live_start_time', 0)
@@ -343,7 +380,6 @@ class BiliMonitor:
                     f"🏁 【{uname}】下播了~\n"
                     f"⏱️ 本次直播时长：{duration_str}"
                 )
-                # 统一使用透传 API 发送，第二个参数 cover 为空字符串即可
                 await self.push_simple(msg, "", stream_ids)
                 
                 user_hist['live_start_time'] = 0
@@ -356,7 +392,7 @@ class BiliMonitor:
 
             return has_event
 
-        except Exception as e:
+        except Exception:
             return False
 
     async def push_simple(self, text: str, image_url: str, group_ids: List[int]):
@@ -384,15 +420,32 @@ class BiliMonitor:
 
     async def process_and_push(self, item: Dict, group_ids: List[int], max_imgs: int):
         parsed = self.parse_dynamic(item)
-        if not parsed: return
+        if not parsed:
+            return
 
         author = parsed.get('author', 'UP主')
-        text = f"📢 【{author}】发布了新动态！\n{parsed['text']}\n🔗 链接: {parsed['url']}"
+        
+        # 格式化发布时间
+        pub_ts = parsed.get('pub_ts', 0)
+        try:
+            pub_ts = int(pub_ts) if pub_ts else 0
+        except (ValueError, TypeError):
+            pub_ts = 0
 
-        # 这里的images做一个上限截断（比如最多9张），防止无限下载
+        if pub_ts > 0:
+            try:
+                pub_time_str = datetime.fromtimestamp(pub_ts).strftime('%Y-%m-%d %H:%M:%S')
+                time_line = f"🕒 发布时间: {pub_time_str}\n"
+            except Exception as e:
+                self.ctx.logger.warning(f"格式化发布时间失败: {e}, pub_ts={pub_ts}")
+                time_line = ""
+        else:
+            time_line = ""
+        
+        text = f"📢 【{author}】发布了新动态！\n{time_line}{parsed['text']}\n🔗 链接: {parsed['url']}"
+
         images = parsed['images'][:9] 
         
-        # 1.提前缓存所有图片，下载为base64
         cached_b64s = []
         for img_url in images:
             b64 = await BiliUtils.url_to_base64(img_url)
@@ -401,10 +454,7 @@ class BiliMonitor:
         
         num_imgs = len(cached_b64s)
 
-        # 2.根据缓存下来的图片数量做判断
         if num_imgs > max_imgs:
-            
-            # 准备图片转发节点 (不含文字)
             bot_name = author
             bot_uin = "10000"
             forward_nodes = []
@@ -420,7 +470,6 @@ class BiliMonitor:
 
             for gid in group_ids:
                 try:
-                    # 先发文字气泡
                     await self.ctx.api.call(
                         "adapter.napcat.message.send_msg",
                         params={
@@ -429,7 +478,6 @@ class BiliMonitor:
                             "message": [{"type": "text", "data": {"text": text}}]
                         }
                     )
-                    # 接着发图片合并包
                     await self.ctx.api.call(
                         "adapter.napcat.message.send_group_forward_msg",
                         params={
@@ -441,7 +489,6 @@ class BiliMonitor:
                 except Exception as e:
                     self.ctx.logger.error(f"发送合并转发(仅图片)失败: {e}")
         else:
-            # 未达到阔值：图文封装在一个气泡中发送
             message_chain = [{"type": "text", "data": {"text": text + "\n"}}]
             for b64 in cached_b64s:
                 message_chain.append({"type": "image", "data": {"file": f"base64://{b64}"}})
@@ -469,7 +516,8 @@ class BiliMonitor:
         if major_type in ['MAJOR_TYPE_OPUS', 'MAJOR_TYPE_ARTICLE']:
             opus = major.get('opus') or {}
             text = opus.get('summary', {}).get('text', '')
-            if not text: text = opus.get('title', '')
+            if not text:
+                text = opus.get('title', '')
             pics = opus.get('pics', [])
             images = [p.get('url') for p in pics]
         
@@ -483,7 +531,8 @@ class BiliMonitor:
             desc = video_data.get('desc', '')
             cover = video_data.get('cover', '')
             text = f"📺 {title}\n{desc}"
-            if cover: images.append(cover)
+            if cover:
+                images.append(cover)
             
         return text, images
 
@@ -505,14 +554,26 @@ class BiliMonitor:
                     self.ctx.logger.info(f"🛑 拦截到开奖通知动态 (ID: {id_str})，已丢弃，不进行推送。")
                     return None
 
+            # 提取发布时间戳
+            raw_pub_ts = module_author.get('pub_ts', 0)
+            try:
+                pub_ts = int(raw_pub_ts) if raw_pub_ts else 0
+            except (ValueError, TypeError):
+                pub_ts = 0
+
             result = {
-                "type": "unknown", "text": "", "images": [], 
+                "type": "unknown",
+                "text": "",
+                "images": [], 
                 "url": f"https://t.bilibili.com/{id_str}",
-                "author": module_author.get('name', 'UP主')
+                "author": module_author.get('name', 'UP主'),
+                "pub_ts": pub_ts,
             }
 
-            if desc_text: result['text'] += desc_text
-            if main_text: result['text'] += f"\n{main_text}"
+            if desc_text:
+                result['text'] += desc_text
+            if main_text:
+                result['text'] += f"\n{main_text}"
             result['images'].extend(main_images)
 
             if item.get('type') == 'DYNAMIC_TYPE_FORWARD':
@@ -528,8 +589,10 @@ class BiliMonitor:
                     orig_major_text, orig_major_images = self._extract_major_data(orig_dynamic)
                     
                     result['text'] += f"\n\n🔁 转发 @{orig_author}:"
-                    if orig_desc: result['text'] += f"\n{orig_desc}"
-                    if orig_major_text: result['text'] += f"\n{orig_major_text}"
+                    if orig_desc:
+                        result['text'] += f"\n{orig_desc}"
+                    if orig_major_text:
+                        result['text'] += f"\n{orig_major_text}"
                     result['images'].extend(orig_major_images)
 
             return result
@@ -539,7 +602,7 @@ class BiliMonitor:
 
 monitor_instance = BiliMonitor()
 
-# 4. 插件注册入口
+# ================= 4. 插件注册入口 =================
 class BiliPlugin(MaiBotPlugin):
     config_model = BiliPluginConfig
 
@@ -554,7 +617,7 @@ class BiliPlugin(MaiBotPlugin):
     async def on_unload(self) -> None:
         await monitor_instance.stop()
 
-    async def on_config_update(self, scope: str, config_data: dict[str, object], version: str) -> None:
+    async def on_config_update(self, scope: str, config_data: dict, version: str) -> None:
         if scope == CONFIG_RELOAD_SCOPE_SELF:
             self.ctx.logger.info(f"B站监控配置已热重载更新: {version}")
             monitor_instance.config = self.config
@@ -565,11 +628,8 @@ class BiliPlugin(MaiBotPlugin):
         pattern=r"^/bili_control\s+(?P<action>start|stop|status|test|info)(?:\s+(?P<arg>.*))?\s*$"
     )
     async def handle_bili_control(self, stream_id: str = "", matched_groups: dict = None, **kwargs) -> tuple:
-        # 获取基础信息
         base_info = kwargs.get("message_base_info", {})
         current_user = kwargs.get("user_id") or base_info.get("user_info", {}).get("user_id")
-        
-        group_id = None
         
         group_id = kwargs.get("group_id")
         
@@ -637,7 +697,8 @@ class BiliPlugin(MaiBotPlugin):
                         user_hist = monitor_instance.history.get(arg, {})
                         if isinstance(user_hist, dict):
                             start_time = user_hist.get('live_start_time', 0)
-                        else: start_time = 0
+                        else:
+                            start_time = 0
                         
                         duration_text = ""
                         if start_time:
@@ -680,6 +741,6 @@ class BiliPlugin(MaiBotPlugin):
 
         return True, f"后台静默执行了 {action} 指令", True
 
-# 5. 工厂函数入口
+# ================= 5. 工厂函数入口 =================
 def create_plugin():
     return BiliPlugin()
