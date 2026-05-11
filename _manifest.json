@@ -9,8 +9,7 @@
   },
   "license": "MIT",
   "urls": {
-    "repository": "https://github.com/whitefox20011120/bilibili_dynamic_push_plugin",
-    "homepage": "https://github.com/whitefox20011120/bilibili_dynamic_push_plugin"
+    "repository": "https://github.com/whitefox20011120/bilibili_dynamic_push_plugin"
   },
   "host_application": {
     "min_version": "1.0.0",
