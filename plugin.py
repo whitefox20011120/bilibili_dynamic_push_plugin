@@ -160,6 +160,23 @@ class BiliMonitor:
         self.config = None 
         self.session = None 
         self.uid_to_stream_ids = {} 
+    
+    @staticmethod
+    def _is_top_dynamic(item: Dict) -> bool:
+        try:
+            modules = item.get('modules') or {}
+            module_tag = modules.get('module_tag') or {}
+            tag_text = module_tag.get('text') or ''
+            if '置顶' in tag_text:
+                return True
+        except Exception:
+            pass
+        try:
+            if (item.get('modules', {}).get('module_author', {}) or {}).get('is_top'):
+                return True
+        except Exception:
+            pass
+        return False
 
     async def update_subscription_map(self):
         if self.config and self.config.subscriptions.users:
@@ -288,58 +305,87 @@ class BiliMonitor:
             user_hist = self.history.get(uid, {})
             if isinstance(user_hist, str):
                 user_hist = {'dyn_id': user_hist}
-            
-            last_saved_id = user_hist.get('dyn_id')
-            
-            if not last_saved_id:
-                latest_id = str(items[0]['id_str']) 
-                for item in items:
-                    if int(item['id_str']) > int(latest_id):
-                        latest_id = str(item['id_str'])
-                
-                self.ctx.logger.info(f"UID {uid} 首次初始化动态，基准ID: {latest_id}")
-                user_hist['dyn_id'] = latest_id
-                self.history[uid] = user_hist
-                BiliUtils.save_history(self.history)
-                return False
 
-            new_items = []
+            last_saved_id = user_hist.get('dyn_id')
+            last_top_id = user_hist.get('top_dyn_id')  # 上次记录的置顶ID
+
+            top_item = None
+            normal_items = []
             for item in items:
-                curr_id = str(item['id_str'])
-                
                 if item.get('type') == 'DYNAMIC_TYPE_LIVE_RCMD':
                     continue
-                
                 try:
-                    major_type = item.get('modules', {}).get('module_dynamic', {}).get('major', {}).get('type')
+                    major_type = (item.get('modules', {})
+                                .get('module_dynamic', {})
+                                .get('major', {}) or {}).get('type')
                     if major_type == 'MAJOR_TYPE_LIVE_RCMD':
                         continue
                 except Exception:
                     pass
 
-                is_top = False
-                try:
-                    if item.get('modules', {}).get('module_tag', {}).get('text') == '置顶':
-                        is_top = True
-                except Exception:
-                    pass
-                
-                if int(curr_id) > int(last_saved_id):
-                    new_items.append(item)
+                if self._is_top_dynamic(item) and top_item is None:
+                    top_item = item
                 else:
-                    if not is_top:
-                        break
-            
-            if not new_items:
+                    normal_items.append(item)
+
+            if not last_saved_id:
+                if normal_items:
+                    latest_id = max(int(it['id_str']) for it in normal_items)
+                    user_hist['dyn_id'] = str(latest_id)
+                else:
+                    user_hist['dyn_id'] = str(items[0]['id_str'])
+
+                if top_item:
+                    user_hist['top_dyn_id'] = str(top_item['id_str'])
+
+                self.ctx.logger.info(
+                    f"UID {uid} 首次初始化动态，基准ID: {user_hist['dyn_id']}, "
+                    f"置顶ID: {user_hist.get('top_dyn_id', '无')}"
+                )
+                self.history[uid] = user_hist
+                BiliUtils.save_history(self.history)
                 return False
 
-            latest_item_to_push = new_items[0]
+            new_items = []
+
+            for item in normal_items:
+                curr_id = int(item['id_str'])
+                if curr_id > int(last_saved_id):
+                    new_items.append(item)
+                else:
+                    break
+
+            if top_item:
+                top_id_str = str(top_item['id_str'])
+                if top_id_str != str(last_top_id or ''):
+                    if int(top_id_str) > int(last_saved_id):
+                        new_items.append(top_item)
+                        self.ctx.logger.info(
+                            f"UID {uid} 检测到新的置顶动态: {top_id_str}（将推送）"
+                        )
+                    else:
+                        self.ctx.logger.info(
+                            f"UID {uid} 置顶动态变更为旧动态 {top_id_str}，"
+                            f"仅更新记录，不推送"
+                        )
+                    user_hist['top_dyn_id'] = top_id_str
+            else:
+                if last_top_id:
+                    self.ctx.logger.info(f"UID {uid} 置顶动态已被取消")
+                    user_hist['top_dyn_id'] = None
+
+            if not new_items:
+                self.history[uid] = user_hist
+                BiliUtils.save_history(self.history)
+                return False
+
+            latest_item_to_push = max(new_items, key=lambda it: int(it['id_str']))
             latest_id_str = str(latest_item_to_push['id_str'])
 
             max_age = self.config.settings.max_dynamic_age if self.config else 3600
-            pub_ts = 0
             try:
-                raw_pub_ts = latest_item_to_push.get('modules', {}).get('module_author', {}).get('pub_ts', 0)
+                raw_pub_ts = (latest_item_to_push.get('modules', {})
+                            .get('module_author', {}).get('pub_ts', 0))
                 pub_ts = int(raw_pub_ts) if raw_pub_ts else 0
             except (ValueError, TypeError, AttributeError):
                 pub_ts = 0
@@ -351,18 +397,30 @@ class BiliMonitor:
                     f"⏳ UID {uid} 发现新动态 {latest_id_str}，但发布于 {age_str} 前，"
                     f"超过设定阈值 {max_age} 秒，静默更新基准ID不推送。"
                 )
-                user_hist['dyn_id'] = latest_id_str
+                if not self._is_top_dynamic(latest_item_to_push):
+                    user_hist['dyn_id'] = latest_id_str
                 self.history[uid] = user_hist
                 BiliUtils.save_history(self.history)
                 return False
 
-            self.ctx.logger.info(f"🎉 UID {uid} 发现新动态: {latest_id_str} (准备推送到 {len(stream_ids)} 个流节点)")
+            is_top_push = self._is_top_dynamic(latest_item_to_push)
+            tag_str = "（📌置顶）" if is_top_push else ""
+            self.ctx.logger.info(
+                f"🎉 UID {uid} 发现新动态{tag_str}: {latest_id_str} "
+                f"(准备推送到 {len(stream_ids)} 个流节点)"
+            )
             await self.process_and_push(latest_item_to_push, stream_ids, max_imgs)
-            
-            user_hist['dyn_id'] = latest_id_str
+
+            if not is_top_push:
+                user_hist['dyn_id'] = latest_id_str
+            normal_new = [it for it in new_items if not self._is_top_dynamic(it)]
+            if normal_new:
+                max_normal_id = str(max(int(it['id_str']) for it in normal_new))
+                if int(max_normal_id) > int(user_hist.get('dyn_id', 0)):
+                    user_hist['dyn_id'] = max_normal_id
+
             self.history[uid] = user_hist
             BiliUtils.save_history(self.history)
-            
             return True
 
         except Exception as e:
@@ -772,11 +830,30 @@ class BiliPlugin(MaiBotPlugin):
                 items = dyn.get('items', [])
                 if not items: 
                     return True, "⚠️ 该 UID 暂无动态", True
-                else:
-                    item_to_push = items[0]
-                    current_max_imgs = self.config.settings.max_images
-                    await monitor_instance.process_and_push(item_to_push, [int(group_id)], current_max_imgs)
-                    return True, "✅ 测试推送已成功发送到群聊", True
+
+                item_to_push = None
+                for it in items:
+                    if it.get('type') == 'DYNAMIC_TYPE_LIVE_RCMD':
+                        continue
+                    try:
+                        major_type = (it.get('modules', {})
+                                    .get('module_dynamic', {})
+                                    .get('major', {}) or {}).get('type')
+                        if major_type == 'MAJOR_TYPE_LIVE_RCMD':
+                            continue
+                    except Exception:
+                        pass
+                    if monitor_instance._is_top_dynamic(it):
+                        continue
+                    item_to_push = it
+                    break
+
+                if not item_to_push:
+                    return True, "⚠️ 该 UID 除置顶外暂无可推送的普通动态", True
+
+                current_max_imgs = self.config.settings.max_images
+                await monitor_instance.process_and_push(item_to_push, [int(group_id)], current_max_imgs)
+                return True, "✅ 测试推送已成功发送到群聊", True
             except Exception as e: 
                 return True, f"❌ 推送错误: {e}", True
 
