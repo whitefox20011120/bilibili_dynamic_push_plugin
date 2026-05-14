@@ -63,6 +63,7 @@ buvid3 = "your_buvid3_here"
 # 订阅列表
 # uid: UP主的UID（多个ID请使用uids）
 # groups: 需要推送到的群号列表
+# 如果你觉得麻烦就去制定群聊使用/B动态 add和/B动态 remove增删订阅
 users = [
     { uid = "114514", groups = ["12345678", "87654321"] },
     { uids = ["114514", "1919810"], groups = ["12345678", "87654321"] },
