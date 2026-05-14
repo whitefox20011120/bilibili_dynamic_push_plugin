@@ -45,6 +45,7 @@ enabled = true  # 插件总开关
 poll_interval = 120    # 基础查询周期（秒），建议不低于 60
 poll_jitter = 10       # 随机抖动时间（秒）。
                        # 例如：设为 120 和 10，则每次间隔在 110s~130s 之间随机。
+admin_qqs = ["114514"] # 管理员QQ号。
 
 max_images = 3         # 单条推送最大图片数，超过此数量则图片打包，合并转发到群聊中。
 ignore_lottery = true  # 启用后自动丢弃开奖类动态。
