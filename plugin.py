@@ -46,23 +46,37 @@ class BiliPluginConfig(PluginConfigBase):
     settings: SettingsSection = Field(default_factory=SettingsSection)
     subscriptions: SubscriptionsSection = Field(default_factory=SubscriptionsSection)
 
+# ================= 工具函数 =================
+async def fetch_uname(uid: str, credential) -> str:
+    """根据 UID 拉取 B 站昵称，失败返回空串"""
+    try:
+        u = user.User(int(uid), credential=credential)
+        info = await u.get_user_info()
+        return info.get('name', '') or ''
+    except Exception as e:
+        logger.error(f"获取 UID {uid} 昵称失败: {e}")
+        return ''
+
 # ================= 2. 订阅管理器 (动静结合) =================
 class SubscriptionManager:
     def __init__(self):
         self.file_path = os.path.join(os.path.dirname(__file__), "subscriptions.json")
         self.lock = asyncio.Lock()
-        self.data = {"static": {}, "custom": {}}
-        self._load_sync() 
-
+        self.data = {"static": {}, "custom": {}, "names": {}}  # 👈 新增 names
+        self._load_sync()
     def _load_sync(self):
         if os.path.exists(self.file_path):
             try:
                 with open(self.file_path, 'r', encoding='utf-8') as f:
                     self.data = json.load(f)
             except Exception:
-                self.data = {"static": {}, "custom": {}}
+                self.data = {"static": {}, "custom": {}, "names": {}}
         else:
-            self.data = {"static": {}, "custom": {}}
+            self.data = {"static": {}, "custom": {}, "names": {}}
+        # 兼容老文件
+        self.data.setdefault("static", {})
+        self.data.setdefault("custom", {})
+        self.data.setdefault("names", {})
 
     async def save(self):
         async with self.lock:
@@ -98,6 +112,15 @@ class SubscriptionManager:
                 merged[uid].update(groups)
         return merged
 
+    def get_name(self, uid: str) -> str:
+        return self.data.get("names", {}).get(str(uid), "")
+    async def set_name(self, uid: str, name: str):
+        if not name:
+            return
+        async with self.lock:
+            self.data.setdefault("names", {})[str(uid)] = name
+        await self.save()
+
 sub_manager = SubscriptionManager()
 
 # ================= 3. 辅助工具类 =================
@@ -132,13 +155,16 @@ class BiliUtils:
             pass
         return {}
 
+    # 修改 BiliUtils 的保存方法
     @staticmethod
-    def save_history(data: Dict[str, Any]):
-        try:
-            with open(BiliUtils.get_history_path(), 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=2)
-        except Exception:
-            pass
+    async def save_history(data: Dict[str, Any]):
+        def _write():
+            try:
+                with open(BiliUtils.get_history_path(), 'w', encoding='utf-8') as f:
+                    json.dump(data, f, indent=2)
+            except Exception:
+                pass
+        await asyncio.to_thread(_write)
     
     @staticmethod
     def format_duration(seconds: float) -> str:
@@ -343,7 +369,7 @@ class BiliMonitor:
                     f"置顶ID: {user_hist.get('top_dyn_id', '无')}"
                 )
                 self.history[uid] = user_hist
-                BiliUtils.save_history(self.history)
+                await BiliUtils.save_history(self.history)
                 return False
 
             new_items = []
@@ -376,7 +402,7 @@ class BiliMonitor:
 
             if not new_items:
                 self.history[uid] = user_hist
-                BiliUtils.save_history(self.history)
+                await BiliUtils.save_history(self.history)
                 return False
 
             latest_item_to_push = max(new_items, key=lambda it: int(it['id_str']))
@@ -400,7 +426,7 @@ class BiliMonitor:
                 if not self._is_top_dynamic(latest_item_to_push):
                     user_hist['dyn_id'] = latest_id_str
                 self.history[uid] = user_hist
-                BiliUtils.save_history(self.history)
+                await BiliUtils.save_history(self.history)
                 return False
 
             is_top_push = self._is_top_dynamic(latest_item_to_push)
@@ -420,7 +446,7 @@ class BiliMonitor:
                     user_hist['dyn_id'] = max_normal_id
 
             self.history[uid] = user_hist
-            BiliUtils.save_history(self.history)
+            await BiliUtils.save_history(self.history)
             return True
 
         except Exception as e:
@@ -451,7 +477,7 @@ class BiliMonitor:
                 if current_status == 1:
                     user_hist['live_start_time'] = time.time()
                 self.history[uid] = user_hist
-                BiliUtils.save_history(self.history)
+                await BiliUtils.save_history(self.history)
                 return False
 
             has_event = False
@@ -489,7 +515,7 @@ class BiliMonitor:
             if current_status != last_status:
                 user_hist['live_status'] = current_status
                 self.history[uid] = user_hist
-                BiliUtils.save_history(self.history)
+                await BiliUtils.save_history(self.history)
 
             return has_event
 
@@ -861,27 +887,24 @@ class BiliPlugin(MaiBotPlugin):
             if not arg or not arg.isdigit():
                 await reply_group("❌ 参数错误！请提供正确的纯数字UID。\n用法: /B动态 add <UID>")
                 return True, None, True
-            
+
             uid = str(arg)
             gid = int(group_id)
-            
-            uname = "未知UP主"
-            try:
-                u = user.User(int(uid), credential=monitor_instance.credential)
-                info = await u.get_user_info()
-                uname = info.get('name', '未知UP主')
-            except Exception as e:
-                self.ctx.logger.error(f"获取UID {uid} 昵称失败: {e}")
+
+            uname = await fetch_uname(uid, monitor_instance.credential)
+            if uname:
+                await sub_manager.set_name(uid, uname)
+            display = f"{uname}（UID:{uid}）" if uname else f"UID:{uid}"
 
             async with sub_manager.lock:
                 if uid not in sub_manager.data["custom"]:
                     sub_manager.data["custom"][uid] = []
                 if gid not in sub_manager.data["custom"][uid]:
                     sub_manager.data["custom"][uid].append(gid)
-            
+
             await sub_manager.save()
             await monitor_instance.update_subscription_map()
-            await reply_group("✅ 已成功加入当前群聊的动态订阅列表！")
+            await reply_group(f"✅ 已成功订阅 {display} 的动态！")
             return True, None, True
 
         elif action == "remove":
@@ -917,25 +940,35 @@ class BiliPlugin(MaiBotPlugin):
 
         elif action == "list":
             gid = int(group_id)
-            static_list = []
-            custom_list = []
-            
+            static_list, custom_list = [], []
+
             for uid, groups in sub_manager.data["static"].items():
                 if gid in groups: static_list.append(uid)
             for uid, groups in sub_manager.data["custom"].items():
                 if gid in groups: custom_list.append(uid)
-                
+
             if not static_list and not custom_list:
                 await reply_group("📭 当前群聊暂无任何B站订阅。")
                 return True, None, True
-                
-            msg = "📋 【当前群聊订阅列表】\n"
+
+            missing = [u for u in static_list + custom_list if not sub_manager.get_name(u)]
+            for uid in missing:
+                uname = await fetch_uname(uid, monitor_instance.credential)
+                if uname:
+                    await sub_manager.set_name(uid, uname)
+                await asyncio.sleep(0.3)  # 避免风控
+
+            def fmt(uid: str) -> str:
+                name = sub_manager.get_name(uid) or "未知UP主"
+                return f"{name} (UID:{uid})"
+
+            msg = "📋 【当前群聊订阅列表】"
             if static_list:
-                msg += f"\n[固定配置] ({len(static_list)}个):\n- " + "\n- ".join(static_list)
+                msg += f"\n[固定配置] ({len(static_list)}个):\n- " + "\n- ".join(fmt(u) for u in static_list)
             if custom_list:
-                msg += f"\n\n[动态添加] ({len(custom_list)}个):\n- " + "\n- ".join(custom_list)
-            msg += "\n\n💡 提示：使用 /B动态 remove [UID] 仅可移除[动态添加]的订阅。"
-            
+                msg += f"\n\n[动态添加] ({len(custom_list)}个):\n- " + "\n- ".join(fmt(u) for u in custom_list)
+            msg += "\n\n💡 使用 /B动态 remove [UID] 仅可移除[动态添加]的订阅。"
+
             await reply_group(msg)
             return True, None, True
 
