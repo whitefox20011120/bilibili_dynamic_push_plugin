@@ -83,7 +83,7 @@ class SettingsSection(PluginConfigBase):
         default=3,
         description="动态推送时最多附带的图片数量。",
         json_schema_extra={
-            "hint": "超过该数量的图片会被丢弃，0 表示不发送图片。",
+            "hint": "当图片数量超过阈值（默认 3 张）时，自动打包为 合并转发消息，防止刷屏",
             "label": "最大图片数",
             "order": 4,
             "step": 1,
