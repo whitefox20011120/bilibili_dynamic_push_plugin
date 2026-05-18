@@ -208,6 +208,7 @@ async def handle_command(plugin, action, arg, group_id, reply_group):
             "📋 /B动态 list\n   列出当前群组的所有订阅源\n"
             "🔍 /B动态 info [UID]\n   查询该 UID 实时直播状态\n"
             "🧪 /B动态 test [UID]\n   触发一次动态推送测试\n"
+            "📈 /B粉丝 [UID]\n   触发一次UP主粉丝数查询\n"
             "------------------\n"
             "⚠️ 仅管理员可用，固定订阅需改后台 Config"
         )
