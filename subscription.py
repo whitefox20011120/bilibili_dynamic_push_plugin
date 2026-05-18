@@ -1,3 +1,6 @@
+"""
+订阅管理器
+"""
 import os
 import json
 import asyncio
