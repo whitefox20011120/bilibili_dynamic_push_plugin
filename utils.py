@@ -24,6 +24,15 @@ async def fetch_uname(uid: str, credential) -> str:
         logger.error(f"获取 UID {uid} 昵称失败: {e}")
         return ""
 
+async def fetch_fans(uid: str, credential) -> int:
+    """获取当前粉丝数，失败返回 -1"""
+    try:
+        u = user.User(int(uid), credential=credential)
+        rel = await u.get_relation_info()
+        return int(rel.get("follower", 0))
+    except Exception as e:
+        logger.error(f"获取 UID {uid} 粉丝数失败: {e}")
+        return -1
 
 class BiliUtils:
     @staticmethod
@@ -74,3 +83,32 @@ class BiliUtils:
         if h > 0:
             return f"{h}小时{m}分{s}秒"
         return f"{m}分{s}秒"
+
+    @staticmethod
+    def get_milestone_step(fans: int) -> int:
+        """根据当前粉丝数返回里程碑步长，<1万返回 0 表示不提醒"""
+        if fans < 10_000:
+            return 0
+        if fans < 100_000:        # 1万 ~ 9.9999万
+            return 10_000
+        if fans < 1_000_000:      # 10万 ~ 99.9999万
+            return 100_000
+        if fans < 10_000_000:     # 100万 ~ 999.9999万
+            return 500_000
+        return 1_000_000          # 1000万以上
+
+    @staticmethod
+    def get_current_milestone(fans: int) -> int:
+        """向下取整到当前里程碑"""
+        step = BiliUtils.get_milestone_step(fans)
+        if step == 0:
+            return 0
+        return (fans // step) * step
+
+    @staticmethod
+    def format_fans(n: int) -> str:
+        """10000 -> 1万, 1000000 -> 100万, 10000000 -> 1000万"""
+        if n >= 10000:
+            v = n / 10000
+            return f"{v:.4f}".rstrip("0").rstrip(".") + "万"
+        return str(n)
