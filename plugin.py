@@ -253,12 +253,11 @@ class BiliMonitor:
         self.running = False
         for task in self._tasks:
             task.cancel()
-            try:
-                await task
-            except Exception:
-                pass
+        # 统一等待所有任务取消，忽略 CancelledError
+        if self._tasks:
+            await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks = []
-        
+
         if self.session and not self.session.closed:
             await self.session.close()
             self.session = None
@@ -794,6 +793,7 @@ class BiliPlugin(MaiBotPlugin):
         action = matched_groups.get("action") if matched_groups else None
         arg = matched_groups.get("arg").strip() if matched_groups and matched_groups.get("arg") else None
 
+        # /B动态 start
         if action == "start":
             if monitor_instance.running:
                 await reply_group("⚠️ B站监控已在运行中，无需重复启动。")
@@ -801,7 +801,8 @@ class BiliPlugin(MaiBotPlugin):
                 await monitor_instance.start(self.ctx, self.config)
                 await reply_group("✅ B站监控已成功启动。")
             return True, None, True
-        
+
+        # /B动态 stop
         elif action == "stop":
             await monitor_instance.stop()
             await reply_group("🛑 B站监控已停止运行。")
@@ -814,6 +815,7 @@ class BiliPlugin(MaiBotPlugin):
             await reply_group(msg)
             return True, None, True
 
+        # /B动态 info
         elif action == "info":
             if not arg:
                 await reply_group("❌ 用法错误: /B动态 info <uid>")
@@ -849,6 +851,7 @@ class BiliPlugin(MaiBotPlugin):
             except Exception as e:
                 return True, f"❌ 查询失败: {e}", True
 
+        # /B动态 test
         elif action == "test":
             if not arg:
                 return True, "❌ 用法错误: /B动态 test <uid>", True
@@ -886,6 +889,7 @@ class BiliPlugin(MaiBotPlugin):
             except Exception as e: 
                 return True, f"❌ 推送错误: {e}", True
 
+        # /B动态 add
         elif action == "add":
             if not arg or not arg.isdigit():
                 await reply_group("❌ 参数错误！请提供正确的纯数字UID。\n用法: /B动态 add <UID>")
@@ -910,6 +914,7 @@ class BiliPlugin(MaiBotPlugin):
             await reply_group(f"✅ 已成功订阅 {display} 的动态！")
             return True, None, True
 
+        # /B动态 remove
         elif action == "remove":
             if not arg or not arg.isdigit():
                 await reply_group("❌ 参数错误！请提供正确的数字UID。\n用法: /B动态 remove <UID>")
@@ -941,6 +946,7 @@ class BiliPlugin(MaiBotPlugin):
                 await reply_group("🗑️ 已成功将此UID 从当前群聊的动态订阅中移除。")
                 return True, None, True
 
+        # /B动态 list
         elif action == "list":
             gid = int(group_id)
             static_list, custom_list = [], []
@@ -975,6 +981,7 @@ class BiliPlugin(MaiBotPlugin):
             await reply_group(msg)
             return True, None, True
 
+        # /B动态 help
         elif action == "help":
             help_text = (
                 "🛠️ Bilibili 订阅管理指令\n"
@@ -987,8 +994,8 @@ class BiliPlugin(MaiBotPlugin):
                 "------------------\n"
                 "⚠️ 仅管理员可用，固定订阅需改后台 Config"
             )
-            await reply_group(help_text)  # 先显式发到群里
-            return True, None, True       # 成功拦截即可，不需要框架再处理文本了
+            await reply_group(help_text)  
+            return True, None, True       
 
         return True, f"❌ 未知指令: {action}。发送 /B动态 help 查看帮助。", True
 
