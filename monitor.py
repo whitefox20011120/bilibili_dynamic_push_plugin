@@ -142,6 +142,7 @@ class BiliMonitor:
                     target_stream_ids = list(stream_ids_set)
                     pushed_dyn = await self.check_dynamic(uid, target_stream_ids, max_imgs)
                     pushed_live = await self.check_live(uid, target_stream_ids)
+                    pushed_fans = await self.check_fans(uid, target_stream_ids) 
                     if pushed_dyn or pushed_live:
                         found_new_things = True
                     await asyncio.sleep(1)
@@ -465,6 +466,69 @@ class BiliMonitor:
                 except Exception as e:
                     self.ctx.logger.error(f"发送同气泡图文失败: {e}")
 
+    # 粉丝数
+    async def check_fans(self, uid: str, stream_ids: List[str]) -> bool:
+        try:
+            u = user.User(int(uid), credential=self.credential)
+            rel = await u.get_relation_info()
+            current_fans = int(rel.get("follower", 0))
+        except Exception as e:
+            self.ctx.logger.error(f"UID {uid} 粉丝数获取失败: {e}")
+            return False
+
+        user_hist = self.history.get(uid, {})
+        if isinstance(user_hist, str):
+            user_hist = {"dyn_id": user_hist}
+
+        current_milestone = BiliUtils.get_current_milestone(current_fans)
+        last_milestone = user_hist.get("fans_milestone")
+        milestones = user_hist.get("fans_milestones", {}) or {}
+
+        user_hist["fans"] = current_fans  # 始终缓存最新粉丝数
+
+        # 首次初始化，不推送
+        if last_milestone is None:
+            user_hist["fans_milestone"] = current_milestone
+            user_hist["fans_milestones"] = milestones
+            self.history[uid] = user_hist
+            await BiliUtils.save_history(self.history)
+            self.ctx.logger.info(
+                f"UID {uid} 首次初始化粉丝里程碑，当前 {current_fans}，基准 {current_milestone}"
+            )
+            return False
+
+        has_event = False
+        if current_milestone > last_milestone and current_milestone >= 10_000:
+            now_ts = time.time()
+            # 可能一次性跨越多档（粉丝暴涨），补齐中间里程碑时间戳
+            step = BiliUtils.get_milestone_step(current_milestone)
+            m = last_milestone + step if last_milestone >= 10_000 else 10_000
+            while m <= current_milestone:
+                milestones.setdefault(str(m), now_ts)
+                # 步长可能随 m 增大切换
+                next_step = BiliUtils.get_milestone_step(m + 1)
+                m += next_step if next_step > 0 else step
+
+            time_str = datetime.fromtimestamp(now_ts).strftime("%Y-%m-%d %H:%M:%S")
+            uname = sub_manager.get_name(uid) or "UP主"
+            msg = (
+                f"🎊 【{uname}】粉丝数突破 {BiliUtils.format_fans(current_milestone)}！\n"
+                f"📊 当前粉丝数：{current_fans:,}\n"
+                f"⏰ 达成时间：{time_str}\n"
+                f"🔗 https://space.bilibili.com/{uid}"
+            )
+            await self.push_simple(msg, "", stream_ids)
+            user_hist["fans_milestone"] = current_milestone
+            user_hist["fans_milestones"] = milestones
+            has_event = True
+            self.ctx.logger.info(
+                f"🎊 UID {uid} 粉丝达到里程碑 {current_milestone}（当前 {current_fans}）"
+            )
+
+        self.history[uid] = user_hist
+        await BiliUtils.save_history(self.history)
+        return has_event
+
     # 解析
     def _extract_major_data(self, module_dynamic: Dict) -> Tuple[str, List[str]]:
         text = ""
@@ -553,6 +617,9 @@ class BiliMonitor:
             self.ctx.logger.error(f"解析出错: {e}")
             return None
 
+
+# 全局单例
+monitor_instance = BiliMonitor()
 
 # 全局单例
 monitor_instance = BiliMonitor()
