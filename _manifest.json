@@ -1,6 +1,6 @@
 {
   "manifest_version": 2,
-  "version": "2.2.0",
+  "version": "2.3.0",
   "name": "B站动态推送",
   "description": "适用于MaiSaka的B站动态订阅与直播状态自动推送插件（旧版请去仓库分支）",
   "author": {
