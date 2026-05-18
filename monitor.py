@@ -1,3 +1,6 @@
+"""
+核心监控逻辑
+"""
 import asyncio
 import time
 import random
@@ -24,7 +27,7 @@ class BiliMonitor:
         self.session = None
         self.uid_to_stream_ids = {}
 
-    # -------- 工具 --------
+    # 工具
     @staticmethod
     def _is_top_dynamic(item: Dict) -> bool:
         try:
@@ -41,7 +44,7 @@ class BiliMonitor:
             pass
         return False
 
-    # -------- 生命周期 --------
+    # 生命周期
     async def update_subscription_map(self):
         if self.config and self.config.subscriptions.users:
             await sub_manager.sync_static(self.config.subscriptions.users)
@@ -112,7 +115,7 @@ class BiliMonitor:
                 except Exception as e:
                     self.ctx.logger.error(f"凭据刷新失败: {e}")
 
-    # -------- 主循环 --------
+    # 主循环
     async def loop(self):
         while self.running:
             try:
@@ -157,7 +160,7 @@ class BiliMonitor:
                 self.ctx.logger.error(f"❌ 轮询错误: {e}")
                 await asyncio.sleep(60)
 
-    # -------- 动态检查 --------
+    # 动态检查
     async def check_dynamic(self, uid: str, stream_ids: List[str], max_imgs: int) -> bool:
         try:
             u = user.User(int(uid), credential=self.credential)
@@ -295,7 +298,7 @@ class BiliMonitor:
             self.ctx.logger.error(f"UID {uid} 动态检查失败: {e}")
             return False
 
-    # -------- 直播检查 --------
+    # 直播检查
     async def check_live(self, uid: str, stream_ids: List[str]) -> bool:
         try:
             u = user.User(int(uid), credential=self.credential)
@@ -356,7 +359,7 @@ class BiliMonitor:
         except Exception:
             return False
 
-    # -------- 推送 --------
+    # 推送
     async def push_simple(self, text: str, image_url: str, group_ids: List[int]):
         b64 = None
         if image_url:
@@ -462,7 +465,7 @@ class BiliMonitor:
                 except Exception as e:
                     self.ctx.logger.error(f"发送同气泡图文失败: {e}")
 
-    # -------- 解析 --------
+    # 解析
     def _extract_major_data(self, module_dynamic: Dict) -> Tuple[str, List[str]]:
         text = ""
         images = []
