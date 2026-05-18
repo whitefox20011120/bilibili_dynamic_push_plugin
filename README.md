@@ -1,4 +1,3 @@
-```md
 # Bilibili 动态 / 直播监控插件
 
 > 适配 **MaiBot / maisaka** 的 Bilibili UP 主动态与开播监控插件，支持多群订阅、合并转发防刷屏，以及防风控的随机轮询机制。
