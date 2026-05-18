@@ -165,7 +165,7 @@ class BiliUtils:
             except Exception:
                 pass
         await asyncio.to_thread(_write)
-    
+
     @staticmethod
     def format_duration(seconds: float) -> str:
         m, s = divmod(int(seconds), 60)
