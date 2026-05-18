@@ -2,7 +2,7 @@
   "manifest_version": 2,
   "version": "2.1.0",
   "name": "B站动态推送",
-  "description": "适用于MaiBot的B站动态订阅与直播状态自动推送插件（旧版请去仓库分支）",
+  "description": "适用于MaiSaka的B站动态订阅与直播状态自动推送插件（旧版请去仓库分支）",
   "author": {
     "name": "白狐",
     "url": "https://github.com/whitefox20011120"
