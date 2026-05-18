@@ -795,21 +795,24 @@ class BiliPlugin(MaiBotPlugin):
         arg = matched_groups.get("arg").strip() if matched_groups and matched_groups.get("arg") else None
 
         if action == "start":
-            if monitor_instance.running: 
-                return True, "⚠️ B站监控已在运行中，无需重复启动。", True
+            if monitor_instance.running:
+                await reply_group("⚠️ B站监控已在运行中，无需重复启动。")
             else:
                 await monitor_instance.start(self.ctx, self.config)
-                return True, "✅ B站监控已成功启动。", True
+                await reply_group("✅ B站监控已成功启动。")
+            return True, None, True
         
         elif action == "stop":
             await monitor_instance.stop()
-            return True, "🛑 B站监控已停止运行。", True
+            await reply_group("🛑 B站监控已停止运行。")
+            return True, None, True
         
         elif action == "status":
             st = "🟢 运行中" if monitor_instance.running else "🔴 已停止"
             cnt = len(monitor_instance.uid_to_stream_ids)
             msg = f"📊 B站监控状态: {st}\n当前共监控 {cnt} 个 B站 UID。"
-            return True, msg, True
+            await reply_group(msg)
+            return True, None, True
 
         elif action == "info":
             if not arg:
