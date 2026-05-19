@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import ClassVar, List
 
 from maibot_sdk import Field, PluginConfigBase
 
 
 class PluginSection(PluginConfigBase):
-    """插件级开关。"""
-
     __ui_label__: ClassVar[str] = "插件开关"
     __ui_order__: ClassVar[int] = 0
 
@@ -17,52 +15,99 @@ class PluginSection(PluginConfigBase):
         default=True,
         description="是否启用本插件。",
         json_schema_extra={
-            "hint": "关闭后插件保持空闲，不再轮询 Bilibili 动态。",
+            "hint": "插件开关。",
             "label": "启用插件",
             "order": 0,
         },
     )
     config_version: str = Field(
         default="1.0.0",
-        description="当前配置结构版本。",
+        json_schema_extra={"disabled": True, "hidden": True, "label": "配置版本", "order": 99},
+    )
+
+
+class CredentialSection(PluginConfigBase):
+    """Bilibili 登录 Cookie 凭证。"""
+
+    __ui_label__: ClassVar[str] = "Cookie 凭证"
+    __ui_order__: ClassVar[int] = 1
+
+    sessdata: str = Field(
+        default="",
+        description="B 站 Cookie 中的 SESSDATA（必填）。",
         json_schema_extra={
-            "disabled": True,
-            "hidden": True,
-            "label": "配置版本",
-            "order": 99,
+            "hint": "必填。F12 → Application → Cookies → bilibili.com 复制 SESSDATA。",
+            "label": "SESSDATA（必填）",
+            "placeholder": "xxxxxxxx%2Cxxxx%2Cxxxxx*xx",
+            "order": 0,
+            "required": True,
+        },
+    )
+    bili_jct: str = Field(
+        default="",
+        description="B 站 Cookie 中的 bili_jct（必填）。",
+        json_schema_extra={
+            "hint": "必填。32 位十六进制字符串。",
+            "label": "bili_jct（必填）",
+            "placeholder": "32 位 hex",
+            "order": 1,
+            "required": True,
+        },
+    )
+    buvid3: str = Field(
+        default="",
+        description="buvid3（选填）。",
+        json_schema_extra={
+            "hint": "选填。部分接口需要，填上更稳。",
+            "label": "buvid3（选填）",
+            "placeholder": "可留空",
+            "order": 2,
+        },
+    )
+    dedeuserid: str = Field(
+        default="",
+        description="DedeUserID（选填）。",
+        json_schema_extra={
+            "hint": "选填。即你的 B 站 UID。",
+            "label": "DedeUserID（选填）",
+            "placeholder": "可留空",
+            "order": 3,
+        },
+    )
+    ac_time_value: str = Field(
+        default="",
+        description="ac_time_value（选填）。",
+        json_schema_extra={
+            "hint": "选填。配置后可自动刷新 Cookie，避免过期。",
+            "label": "ac_time_value（选填）",
+            "placeholder": "可留空",
+            "order": 4,
         },
     )
 
 
 class SettingsSection(PluginConfigBase):
-    """运行参数设置。"""
-
     __ui_label__: ClassVar[str] = "设置"
-    __ui_order__: ClassVar[int] = 1
+    __ui_order__: ClassVar[int] = 2
 
     poll_interval: int = Field(
         default=120,
-        description="轮询基准秒数。",
         json_schema_extra={
-            "hint": "每隔该秒数轮询一次 Bilibili 动态，建议不低于 60 秒。",
+            "hint": "每隔该秒数轮询一次，建议不低于 60 秒。",
             "label": "轮询基准（秒）",
-            "order": 0,
-            "step": 1,
+            "order": 0, "step": 1,
         },
     )
     poll_jitter: int = Field(
         default=10,
-        description="轮询抖动秒数。",
         json_schema_extra={
-            "hint": "实际轮询间隔 = 基准 ± 抖动，避免请求过于规律。",
+            "hint": "实际间隔 = 基准 ± 抖动。",
             "label": "轮询抖动（秒）",
-            "order": 1,
-            "step": 1,
+            "order": 1, "step": 1,
         },
     )
     admin_qqs: list[str] = Field(
         default_factory=list,
-        description="管理员 QQ 列表。",
         json_schema_extra={
             "hint": "管理员可以通过命令操作订阅。",
             "label": "管理员 QQ",
@@ -70,66 +115,58 @@ class SettingsSection(PluginConfigBase):
             "placeholder": "请输入 QQ 号",
         },
     )
-    credential: dict = Field(
-        default_factory=dict,
-        description="Bilibili Cookie 凭证。",
-        json_schema_extra={
-            "hint": "包含 SESSDATA、bili_jct 等字段，用于访问需要登录的接口。",
-            "label": "Cookie 凭证",
-            "order": 3,
-        },
-    )
     max_images: int = Field(
         default=3,
-        description="动态推送时最多附带的图片数量。",
         json_schema_extra={
-            "hint": "当图片数量超过阈值（默认 3 张）时，自动打包为 合并转发消息，防止刷屏",
+            "hint": "图片超过该数量自动改用合并转发。",
             "label": "最大图片数",
-            "order": 4,
-            "step": 1,
+            "order": 3, "step": 1,
         },
     )
     ignore_lottery: bool = Field(
         default=True,
-        description="是否自动丢弃开奖动态。",
         json_schema_extra={
-            "hint": "开启后含有抽奖/开奖关键字的动态将不会被推送。",
+            "hint": "开启后含开奖关键字的动态会被丢弃。",
             "label": "忽略开奖动态",
-            "order": 5,
+            "order": 4,
         },
     )
     max_dynamic_age: int = Field(
         default=3600,
-        description="动态最大有效时长（秒）。",
         json_schema_extra={
-            "hint": "超过该时长的动态不再推送，默认 3600 秒（1 小时）。",
+            "hint": "超过该时长的动态不再推送（秒）。",
             "label": "动态最大有效时长（秒）",
-            "order": 6,
-            "step": 60,
+            "order": 5, "step": 60,
         },
     )
 
 
 class SubscriptionsSection(PluginConfigBase):
-    """订阅配置。"""
+    """订阅配置：每行一组 = "UID => 群号1, 群号2"。"""
 
     __ui_label__: ClassVar[str] = "订阅"
-    __ui_order__: ClassVar[int] = 2
+    __ui_order__: ClassVar[int] = 3
 
-    users: list[dict] = Field(
-        default_factory=lambda: [{"uid": "114514", "groups": ["1919810"]}],
-        description="订阅的 UP 主及其推送目标群。",
+    users: List[str] = Field(
+        default_factory=lambda: ["114514 => 1919810"],
+        description='每行一组订阅，格式："UID => 群号1, 群号2"。',
         json_schema_extra={
-            "hint": "每项包含 uid（UP 主 UID）和 groups（推送的群号列表）。",
-            "label": "订阅列表",
+            "hint": (
+                "每行一组订阅。\n"
+                "格式：UID => 群号1, 群号2\n"
+                "示例：114514 => 1919810, 123456\n"
+                "支持的分隔符：=> | : ｜ ， ,"
+            ),
+            "label": "订阅列表（每行一组）",
+            "placeholder": "114514 => 1919810, 123456",
             "order": 0,
+            "required": True,
         },
     )
 
 
 class BiliPluginConfig(PluginConfigBase):
-    """Bilibili 插件完整配置。"""
-
     plugin: PluginSection = Field(default_factory=PluginSection)
+    credential: CredentialSection = Field(default_factory=CredentialSection)  
     settings: SettingsSection = Field(default_factory=SettingsSection)
     subscriptions: SubscriptionsSection = Field(default_factory=SubscriptionsSection)
