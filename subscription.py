@@ -35,19 +35,24 @@ class SubscriptionManager:
             await asyncio.to_thread(_write)
 
     async def sync_static(self, config_users: list):
+        def _get(obj, key, default=None):
+            if isinstance(obj, dict):
+                return obj.get(key, default)
+            return getattr(obj, key, default)
+
         new_static = {}
         for sub in config_users:
-            raw_groups = sub.get("groups", [])
+            raw_groups = _get(sub, "groups", []) or []
             uids = []
-            if sub.get("uid"):
-                uids.append(str(sub["uid"]))
-            if sub.get("uids") and isinstance(sub.get("uids"), list):
-                uids.extend([str(x) for x in sub["uids"]])
+            uid = _get(sub, "uid")
+            if uid:
+                uids.append(str(uid))
+            uids_extra = _get(sub, "uids")
+            if isinstance(uids_extra, list):
+                uids.extend(str(x) for x in uids_extra)
 
             for uid in uids:
-                if uid not in new_static:
-                    new_static[uid] = []
-                new_static[uid].extend([int(g) for g in raw_groups])
+                new_static.setdefault(uid, []).extend(int(g) for g in raw_groups)
 
         async with self.lock:
             self.data["static"] = new_static
