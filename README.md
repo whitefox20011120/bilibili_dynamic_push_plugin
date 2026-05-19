@@ -46,7 +46,7 @@ pip install bilibili-api-python aiohttp
 [plugin]
 enabled = true                 # 插件总开关
 
-# 2. Cookie 凭证（顶级 section）
+# 2. Cookie 凭证
 #    获取方式：浏览器登录 B 站 → F12 → Application → Cookies → bilibili.com
 [credential]
 sessdata      = ""             # 必填：SESSDATA
