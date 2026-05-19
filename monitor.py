@@ -46,13 +46,58 @@ class BiliMonitor:
 
     # 生命周期
     async def update_subscription_map(self):
-        if self.config and self.config.subscriptions.users:
-            await sub_manager.sync_static(self.config.subscriptions.users)
+        if self.config:
+            config_users = self._parse_subscription_lines(
+                self.config.subscriptions.users or []
+            )
+            await sub_manager.sync_static(config_users)
         self.uid_to_stream_ids = sub_manager.get_merged_map()
         if self.ctx:
             self.ctx.logger.info(
                 f"🔄 订阅映射已更新：当前共监控 {len(self.uid_to_stream_ids)} 个 B站 UID"
             )
+
+    @staticmethod
+    def _parse_subscription_lines(lines):
+        """
+        将形如 "114514 => 1919810, 123456" 的字符串列表
+        解析成 [{"uid": "114514", "groups": ["1919810", "123456"]}, ...]
+        分隔符兼容：=>  |  :  全角逗号  半角逗号  空格
+        """
+        import re
+
+        result = []
+        for raw in lines:
+            if not isinstance(raw, str):
+                continue
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+
+            # 先把 UID 与 群号部分切开
+            parts = re.split(r"\s*(?:=>|->|:|：|\|)\s*", line, maxsplit=1)
+            if len(parts) != 2:
+                # 兜底：第一个空白当分隔符
+                parts = line.split(None, 1)
+                if len(parts) != 2:
+                    continue
+
+            uid_str = parts[0].strip()
+            groups_str = parts[1].strip()
+            if not uid_str.isdigit():
+                continue
+
+            groups = [
+                g.strip()
+                for g in re.split(r"[,，\s]+", groups_str)
+                if g.strip().isdigit()
+            ]
+            if not groups:
+                continue
+
+            result.append({"uid": uid_str, "groups": groups})
+
+        return result
 
     async def start(self, ctx, config):
         if self.running:
@@ -66,18 +111,21 @@ class BiliMonitor:
 
         self.ctx.logger.info("🟢 启动 Bilibili 监控任务...")
 
-        cred_dict = self.config.settings.credential
-        if cred_dict and isinstance(cred_dict, dict):
+        cred_obj = self.config.credential
+        cred_dict = cred_obj.model_dump() if hasattr(cred_obj, "model_dump") else (cred_obj or {})
+
+        if cred_dict:
             valid_cred = {}
             for k, v in cred_dict.items():
-                if v:
-                    if isinstance(v, str) and "%" in v:
-                        try:
-                            valid_cred[k] = unquote(v)
-                        except Exception:
-                            valid_cred[k] = v
-                    else:
+                if not v:
+                    continue
+                if isinstance(v, str) and "%" in v:
+                    try:
+                        valid_cred[k] = unquote(v)
+                    except Exception:
                         valid_cred[k] = v
+                else:
+                    valid_cred[k] = v
             if valid_cred:
                 try:
                     self.credential = Credential(**valid_cred)
