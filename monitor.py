@@ -77,7 +77,7 @@ class BiliMonitor:
             # 先把 UID 与 群号部分切开
             parts = re.split(r"\s*(?:=>|->|:|：|\|)\s*", line, maxsplit=1)
             if len(parts) != 2:
-                # 兜底：第一个空白当分隔符
+                # 兜底：将第一个空白当分隔符
                 parts = line.split(None, 1)
                 if len(parts) != 2:
                     continue
