@@ -529,15 +529,23 @@ class BiliMonitor:
             user_hist = {"dyn_id": user_hist}
 
         current_milestone = BiliUtils.get_current_milestone(current_fans)
-        last_milestone = user_hist.get("fans_milestone")
+        # 用 "键是否存在" 判断首次初始化，而不是用值
+        is_first_init = "fans_milestone" not in user_hist
+        try:
+            last_milestone = int(user_hist.get("fans_milestone") or 0)
+        except (TypeError, ValueError):
+            last_milestone = 0
         milestones = user_hist.get("fans_milestones", {}) or {}
 
         user_hist["fans"] = current_fans  # 始终缓存最新粉丝数
 
         # 首次初始化，不推送
-        if last_milestone is None:
+        if is_first_init:
             user_hist["fans_milestone"] = current_milestone
             user_hist["fans_milestones"] = milestones
+            # 把当前里程碑的达成时间补一个占位（用 0 表示"未记录精确时间"）
+            if current_milestone >= 10_000:
+                milestones.setdefault(str(current_milestone), 0)
             self.history[uid] = user_hist
             await BiliUtils.save_history(self.history)
             self.ctx.logger.info(
@@ -546,16 +554,34 @@ class BiliMonitor:
             return False
 
         has_event = False
+        # 防暴推：单轮跨度超过 2 档视为异常（数据被清/手动改动），静默更新
+        step_now = BiliUtils.get_milestone_step(current_milestone) or 10_000
+        if last_milestone > 0 and (current_milestone - last_milestone) > step_now * 2:
+            self.ctx.logger.warning(
+                f"⚠️ UID {uid} 粉丝里程碑跨度异常 "
+                f"({last_milestone} → {current_milestone})，静默更新不推送"
+            )
+            user_hist["fans_milestone"] = current_milestone
+            user_hist["fans_milestones"] = milestones
+            self.history[uid] = user_hist
+            await BiliUtils.save_history(self.history)
+            return False
+        
         if current_milestone > last_milestone and current_milestone >= 10_000:
             now_ts = time.time()
-            # 可能一次性跨越多档（粉丝暴涨），补齐中间里程碑时间戳
-            step = BiliUtils.get_milestone_step(current_milestone)
-            m = last_milestone + step if last_milestone >= 10_000 else 10_000
-            while m <= current_milestone:
+            # 起点 m：上一里程碑的下一档；若上次 < 1 万，则从 1 万开始
+            if last_milestone >= 10_000:
+                start_step = BiliUtils.get_milestone_step(last_milestone + 1) or 10_000
+                m = last_milestone + start_step
+            else:
+                m = 10_000
+            # 避免极端数据导致死循环
+            guard = 0
+            while m <= current_milestone and guard < 1000:
                 milestones.setdefault(str(m), now_ts)
-                # 步长可能随 m 增大切换
-                next_step = BiliUtils.get_milestone_step(m + 1)
-                m += next_step if next_step > 0 else step
+                next_step = BiliUtils.get_milestone_step(m + 1) or 10_000
+                m += next_step
+                guard += 1
 
             time_str = datetime.fromtimestamp(now_ts).strftime("%Y-%m-%d %H:%M:%S")
             uname = sub_manager.get_name(uid) or "UP主"
@@ -665,9 +691,6 @@ class BiliMonitor:
             self.ctx.logger.error(f"解析出错: {e}")
             return None
 
-
-# 全局单例
-monitor_instance = BiliMonitor()
 
 # 全局单例
 monitor_instance = BiliMonitor()
