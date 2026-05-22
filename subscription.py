@@ -52,7 +52,9 @@ class SubscriptionManager:
                 uids.extend(str(x) for x in uids_extra)
 
             for uid in uids:
-                new_static.setdefault(uid, []).extend(int(g) for g in raw_groups)
+                merged = set(new_static.get(uid, []))
+                merged.update(int(g) for g in raw_groups)
+                new_static[uid] = sorted(merged)
 
         async with self.lock:
             self.data["static"] = new_static
