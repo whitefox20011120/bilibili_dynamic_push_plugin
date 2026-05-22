@@ -57,24 +57,37 @@ class BiliUtils:
     @staticmethod
     def load_history() -> Dict[str, Any]:
         path = BiliUtils.get_history_path()
+        if not os.path.exists(path):
+            return {}
         try:
-            if os.path.exists(path):
-                with open(path, "r", encoding="utf-8") as f:
-                    return json.load(f)
-        except Exception:
-            pass
-        return {}
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            # JSON 损坏时不能静默返回空，否则所有 UP 主会被当作"首次初始化"导致漏推
+            logger.error(f"❌ 加载 history.json 失败: {e}，已备份损坏文件并重建。")
+            try:
+                bak = path + ".broken"
+                os.replace(path, bak)
+                logger.error(f"   损坏文件已备份至: {bak}")
+            except Exception as e2:
+                logger.error(f"   备份损坏文件失败: {e2}")
+            return {}
 
     @staticmethod
     async def save_history(data: Dict[str, Any]):
-        def _write():
-            try:
-                with open(BiliUtils.get_history_path(), "w", encoding="utf-8") as f:
-                    json.dump(data, f, indent=2)
-            except Exception:
-                pass
+        path = BiliUtils.get_history_path()
+        tmp_path = path + ".tmp"
 
-        await asyncio.to_thread(_write)
+        def _write():
+            # 先写临时文件再 rename，避免写一半进程被杀导致 JSON 损坏
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+            os.replace(tmp_path, path)
+
+        try:
+            await asyncio.to_thread(_write)
+        except Exception as e:
+            logger.error(f"❌ 保存 history.json 失败: {e}")
 
     @staticmethod
     def format_duration(seconds: float) -> str:
