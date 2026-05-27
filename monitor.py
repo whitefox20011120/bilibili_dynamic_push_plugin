@@ -11,6 +11,7 @@ from typing import Dict, List, Optional, Tuple
 
 import aiohttp
 from bilibili_api import user, Credential
+from bilibili_api import dynamic as bili_dynamic
 
 from .utils import BiliUtils
 from .subscription import sub_manager
@@ -77,7 +78,7 @@ class BiliMonitor:
             # 先把 UID 与 群号部分切开
             parts = re.split(r"\s*(?:=>|->|:|：|\|)\s*", line, maxsplit=1)
             if len(parts) != 2:
-                # 兜底：将第一个空白当分隔符
+                # 兜底：第一个空白当分隔符
                 parts = line.split(None, 1)
                 if len(parts) != 2:
                     continue
@@ -295,6 +296,15 @@ class BiliMonitor:
                 self.history[uid] = user_hist
                 await BiliUtils.save_history(self.history)
                 return False
+            
+            # 新动态自动点赞
+            if self.config and self.config.settings.auto_like:
+                for it in new_items:
+                    try:
+                        await self._auto_like_dynamic(it)
+                        await asyncio.sleep(0.5)  # 防风控小间隔
+                    except Exception as e:
+                        self.ctx.logger.error(f"自动点赞调度异常: {e}")
 
             latest_item_to_push = max(new_items, key=lambda it: int(it["id_str"]))
             latest_id_str = str(latest_item_to_push["id_str"])
@@ -514,6 +524,36 @@ class BiliMonitor:
                 except Exception as e:
                     self.ctx.logger.error(f"发送同气泡图文失败: {e}")
 
+    async def _auto_like_dynamic(self, item: Dict):
+        """对单条动态自动点赞。"""
+        if not self.config or not self.config.settings.auto_like:
+            return
+        if not self.credential:
+            self.ctx.logger.warning("⚠️ 自动点赞已开启，但 B 站凭证未加载，跳过。")
+            return
+
+        dyn_id = str(item.get("id_str") or "")
+        if not dyn_id:
+            return
+
+        # 取作者名仅为日志好看
+        try:
+            author = (
+                (item.get("modules") or {})
+                .get("module_author", {})
+                .get("name", "UP主")
+            )
+        except Exception:
+            author = "UP主"
+
+        try:
+            d = bili_dynamic.Dynamic(int(dyn_id), credential=self.credential)
+            # bilibili_api 的 set_like(status=True) -> 点赞；False -> 取消
+            await d.set_like(True)
+            self.ctx.logger.info(f"👍 自动点赞成功: 【{author}】 动态 {dyn_id}")
+        except Exception as e:
+            self.ctx.logger.error(f"❌ 自动点赞失败: 动态 {dyn_id}, 原因: {e}")
+
     # 粉丝数
     async def check_fans(self, uid: str, stream_ids: List[str]) -> bool:
         try:
@@ -690,7 +730,6 @@ class BiliMonitor:
         except Exception as e:
             self.ctx.logger.error(f"解析出错: {e}")
             return None
-
 
 # 全局单例
 monitor_instance = BiliMonitor()
