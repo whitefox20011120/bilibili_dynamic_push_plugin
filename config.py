@@ -139,6 +139,14 @@ class SettingsSection(PluginConfigBase):
             "order": 5, "step": 60,
         },
     )
+    auto_like: bool = Field(
+        default=False,
+        json_schema_extra={
+            "hint": "开启后，监控到 UP 主新动态时会自动点赞（需填写 SESSDATA 与 bili_jct）。",
+            "label": "自动点赞新动态",
+            "order": 6,
+        },
+    )
 
 
 class SubscriptionsSection(PluginConfigBase):
