@@ -1,6 +1,7 @@
 # Bilibili 动态 / 直播监控插件
 
 > 适配 **maisaka** 的 Bilibili UP 主动态与开播监控插件，支持多群订阅、合并转发防刷屏，以及防风控的随机轮询机制。
+> 有问题请去插件仓库提issue
 
 # 注意！不要使用独立的 Napcat_Adapter！请去插件市场安装 Napcat_Adapter 适配器！！！
 
