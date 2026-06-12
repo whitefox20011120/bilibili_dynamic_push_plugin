@@ -66,7 +66,7 @@ admin_qqs       = ["114514"]   # 管理员 QQ 号列表
 max_images      = 3            # 单条动态最大同消息图片数，超过则合并转发
 ignore_lottery  = true         # 自动丢弃开奖类动态
 max_dynamic_age = 3600         # 动态最大有效时长（秒），过老的不再推送
-auto_like       = false        # 开启后自动点赞新动态
+auto_like       = false        # 开启后自动点赞新动态（谨慎使用！这玩意儿太容易风控了）
 
 # 4. 订阅列表（每行一组：UID => 群号1, 群号2）
 #    支持的分隔符：=>  ->  :  ：  |
