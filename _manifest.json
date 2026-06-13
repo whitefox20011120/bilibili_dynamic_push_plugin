@@ -43,6 +43,7 @@
     ]
   },
   "id": "whitefox.bilibili-dynamic-push",
+  "plugin_type": "media",
   "display": {
     "icon": {
       "type": "local",
