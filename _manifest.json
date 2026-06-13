@@ -20,16 +20,16 @@
     "max_version": "2.99.99"
   },
   "dependencies": [
-  {
-    "type": "python_package",
-    "name": "bilibili-api-python",
-    "version_spec": ">=17.4.1"
-  },
-  {
-    "type": "python_package",
-    "name": "aiohttp",
-    "version_spec": ">=3.9.0"
-  }
+    {
+      "type": "python_package",
+      "name": "bilibili-api-python",
+      "version_spec": ">=17.4.1"
+    },
+    {
+      "type": "python_package",
+      "name": "aiohttp",
+      "version_spec": ">=3.9.0"
+    }
   ],
   "capabilities": [
     "config.get",
@@ -42,5 +42,13 @@
       "zh-CN"
     ]
   },
-  "id": "whitefox.bilibili-dynamic-push"
+  "id": "whitefox.bilibili-dynamic-push",
+  "display": {
+    "icon": {
+      "type": "local",
+      "value": "assets/bilibili.png",
+      "fallback": "image",
+      "background": "#ffffff"
+    }
+  }
 }
