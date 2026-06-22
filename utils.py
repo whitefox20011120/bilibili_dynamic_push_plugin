@@ -39,8 +39,6 @@ class BiliUtils:
     async def url_to_base64(url: str, session: aiohttp.ClientSession) -> Optional[str]:
         if not url or not session:
             return None
-        if "hdslb.com" in url and "@" not in url and not url.lower().endswith(".gif"):
-            url = f"{url}@1080w_1e_1c.webp"
         try:
             async with session.get(url) as resp:
                 if resp.status == 200:
