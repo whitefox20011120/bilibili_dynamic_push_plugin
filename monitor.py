@@ -360,15 +360,32 @@ class BiliMonitor:
     # 直播检查
     async def check_live(self, uid: str, stream_ids: List[str]) -> bool:
         try:
-            u = user.User(int(uid), credential=self.credential)
-            raw_info = await u.get_live_info()
+            # 改用B站官方直播间公开接口（免登录免Cookie，彻底避开 -352 风控）
+            live_api_url = "https://api.live.bilibili.com/room/v1/Room/get_status_info_by_uids"
+            api_headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            }
+            async with self.session.post(
+                live_api_url,
+                json={"uids": [int(uid)]},
+                headers=api_headers,
+                timeout=aiohttp.ClientTimeout(total=8),
+            ) as resp:
+                api_res = await resp.json()
 
-            live_room = raw_info.get("live_room", {})
-            current_status = live_room.get("liveStatus", 0)
-            room_title = live_room.get("title", "直播间")
-            url = live_room.get("url", "")
-            cover = live_room.get("cover", "")
-            uname = raw_info.get("name", "UP主")
+            if api_res.get("code") != 0 or not api_res.get("data"):
+                return False
+
+            room_info = api_res.get("data", {}).get(str(uid), {})
+            if not room_info:
+                return False
+
+            current_status = room_info.get("live_status", 0)
+            room_title = room_info.get("title", "直播间")
+            room_id = room_info.get("room_id")
+            url = f"https://live.bilibili.com/{room_id}" if room_id else ""
+            cover = room_info.get("cover_from_user") or room_info.get("keyframe", "")
+            uname = room_info.get("uname") or sub_manager.get_name(uid) or "UP主"
 
             user_hist = self.history.get(uid, {})
             if isinstance(user_hist, str):

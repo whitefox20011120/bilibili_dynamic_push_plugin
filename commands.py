@@ -44,11 +44,32 @@ async def handle_command(plugin, action, arg, group_id, reply_group):
             await reply_group("❌ 用法错误: /B动态 info <uid>")
             return True, None, True
         try:
-            u = user.User(int(arg), credential=monitor_instance.credential)
-            raw_info = await u.get_live_info()
-            live_room = raw_info.get("live_room", {})
-            status = live_room.get("liveStatus", 0)
-            uname = raw_info.get("name", "未知")
+            import aiohttp
+
+            live_api_url = "https://api.live.bilibili.com/room/v1/Room/get_status_info_by_uids"
+            api_headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            }
+            async with aiohttp.ClientSession() as sess:
+                async with sess.post(
+                    live_api_url,
+                    json={"uids": [int(arg)]},
+                    headers=api_headers,
+                    timeout=aiohttp.ClientTimeout(total=8),
+                ) as resp:
+                    api_res = await resp.json()
+
+            room_info = api_res.get("data", {}).get(str(arg), {})
+            if not room_info:
+                await reply_group(f"❌ 未找到 UID {arg} 的直播间信息")
+                return True, None, True
+
+            status = room_info.get("live_status", 0)
+            uname = room_info.get("uname") or sub_manager.get_name(arg) or f"UID:{arg}"
+            title = room_info.get("title", "直播间")
+            room_id = room_info.get("room_id")
+            url = f"https://live.bilibili.com/{room_id}" if room_id else ""
+            cover = room_info.get("cover_from_user") or room_info.get("keyframe", "")
 
             if status == 1:
                 user_hist = monitor_instance.history.get(arg, {})
@@ -59,16 +80,17 @@ async def handle_command(plugin, action, arg, group_id, reply_group):
 
                 msg = (
                     f"🟢 【{uname}】正在直播中！\n"
-                    f"📺 {live_room.get('title')}\n"
-                    f"🔗 {live_room.get('url')}"
+                    f"📺 {title}\n"
+                    f"🔗 {url}"
                     f"{duration_text}"
                 )
-                await monitor_instance.push_simple(msg, live_room.get("cover", ""), [int(group_id)])
-                return True, "✅ 直播状态已推送到当前群聊。", True
+                await monitor_instance.push_simple(msg, cover, [int(group_id)])
             else:
-                return True, f"⚪ 状态查询结果：【{uname}】未开播。", True
+                await reply_group(f"⚪ 状态查询结果：【{uname}】当前未开播。\n📺 房间标题：{title}\n🔗 链接：{url}")
+            return True, None, True
         except Exception as e:
-            return True, f"❌ 查询失败: {e}", True
+            await reply_group(f"❌ 查询失败: {e}")
+            return True, None, True
 
     # test
     if action == "test":
